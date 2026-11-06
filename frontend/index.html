@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ERP + Fabrika Simülasyonu</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    margin: 0; background: #0f172a; color: #e2e8f0;
+  }
+  header {
+    background: #1e293b; border-bottom: 1px solid #334155;
+    padding: 12px 24px; display: flex; align-items: center; gap: 14px;
+    position: sticky; top: 0; z-index: 10;
+  }
+  h1 { font-size: 18px; margin: 0; letter-spacing: 0.4px; }
+  .ws { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 6px #ef4444; }
+  .ws.online { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+  .ws.offline { background: #64748b; }
+  main { max-width: 1400px; margin: 0 auto; padding: 24px; display: grid; grid-template-columns: 1fr; gap: 24px; }
+  @media (min-width: 900px) { main { grid-template-columns: 1fr 340px; } }
+
+  /* Fırın kartları */
+  .furnace-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .card {
+    background: #1e293b; border: 1px solid #334155; border-radius: 12px;
+    padding: 16px 18px; position: relative;
+  }
+  .card h2 { margin: 0 0 4px; font-size: 16px; display: flex; justify-content: space-between; align-items: baseline; }
+  .type { font-size: 11px; text-transform: uppercase; color: #94a3b8; margin-left: 8px; }
+  .temp-row { display: flex; align-items: baseline; gap: 10px; margin-top: 8px; }
+  .temp { font-size: 44px; font-variant-numeric: tabular-nums; font-weight: 700; letter-spacing: -1px; }
+  .unit { font-size: 20px; color: #94a3b8; }
+  .meta { font-size: 13px; color: #cbd5e1; margin-top: 6px; display: flex; gap: 18px; flex-wrap: wrap; }
+  .meta b { color: #f8fafc; }
+  .spark { margin-top: 12px; width: 100%; height: 52px; background: #0b1120; border: 1px solid #334155; border-radius: 8px; display: block; }
+
+  .status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; }
+  .status.ON { background: #166534; color: #bbf7d0; }
+  .status.OFF { background: #475569; color: #cbd5e1; }
+  .status.ALARM { background: #7f1d1d; color: #fecaca; animation: blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity: 0.55; } }
+
+  .alarm-box {
+    margin-top: 10px; padding: 8px 10px; background: #7f1d1d; color: #fecaca;
+    border-radius: 8px; font-size: 13px; display: none;
+  }
+  .alarm-box.show { display: block; }
+
+  /* Üretim emirleri */
+  section { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 18px; }
+  h3 { margin: 0 0 14px; font-size: 16px; border-bottom: 1px solid #334155; padding-bottom: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: #94a3b8; padding: 6px 8px; border-bottom: 1px solid #334155; font-weight: 600; }
+  td { padding: 7px 8px; border-bottom: 1px solid #2d3a52; color: #cbd5e1; font-variant-numeric: tabular-nums; }
+  tr:nth-child(even) td { background: #161e2e; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+  .badge.CREATED { background: #334155; color: #cbd5e1; }
+  .badge.RUNNING { background: #15803d; color: #bbf7d0; }
+  .badge.COMPLETED { background: #1d4ed8; color: #bfdbfe; }
+  .badge.CANCELLED { background: #475569; color: #94a3b8; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+  input, select {
+    width: 100%; background: #0f172a; border: 1px solid #475569; color: #e2e8f0;
+    padding: 8px 10px; border-radius: 8px; font-size: 13px;
+  }
+  input:focus { outline: none; border-color: #38bdf8; }
+  button {
+    background: #2563eb; color: #fff; border: none; padding: 9px 16px;
+    border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button:hover { background: #3b82f6; }
+  button.secondary { background: #475569; }
+  button.secondary:hover { background: #64748b; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .alarms { max-height: 220px; overflow-y: auto; font-size: 12px; }
+  .alarm-item { padding: 6px 8px; border-bottom: 1px solid #2d3a52; color: #fca5a5; }
+  .alarm-item .time { color: #94a3b8; margin-right: 8px; font-family: ui-monospace, SFMono-Regular; }
+  .muted { color: #64748b; font-size: 12px; }
+
+  .start-row { display: flex; gap: 8px; margin-top: 6px; }
+  select.furnace-select { max-width: 170px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="ws" id="wsDot" title="WebSocket bağlantısı"></div>
+  <h1>ERP + Fabrika Simülasyonu <span class="type">· Canlı makine takibi</span></h1>
+  <span class="muted" id="wsStatus">Bağlanıyor…</span>
+</header>
+
+<main>
+  <div>
+    <div class="furnace-grid" id="furnaceGrid">
+      <!-- JS tarafından doldurulur -->
+    </div>
+  </div>
+
+  <section style="grid-column: 1 / -1;">
+    <h3>Üretim Emirleri</h3>
+    <div class="grid2">
+      <input id="inpProduct" placeholder="Ürün (ör. Alüminyum Profili)">
+      <input id="inpTarget" type="number" placeholder="Hedef sıcaklık (°C)" value="750">
+    </div>
+    <div class="grid2">
+      <select id="inpFurnace" class="furnace-select"></select>
+      <input id="inpDuration" type="number" placeholder="Süre (dk)" value="30">
+    </div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button id="btnCreateOrder">Sipariş Oluştur</button>
+      <span class="muted">Oluşturulduktan sonra ilgili fırından "Başlat" ile çevrimi başlatın.</span>
+    </div>
+    <table id="ordersTable">
+      <thead><tr>
+        <th>Emir No</th><th>Ürün</th><th>Fırın</th><th>Hedef</th><th>Süre</th><th>Durum</th><th>İşlem</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h3>Alarmlar</h3>
+    <div id="alarms" class="alarms">
+      <div class="muted">Şu anda aktif alarm yok.</div>
+    </div>
+  </section>
+</main>
+
+<script>
+const WS_URL = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/api/ws';
+const wsDot = document.getElementById('wsDot');
+const wsStatus = document.getElementById('wsStatus');
+const furnaceGrid = document.getElementById('furnaceGrid');
+const ordersTbody = document.querySelector('#ordersTable tbody');
+const alarmsBox = document.getElementById('alarms');
+const inpFurnace = document.getElementById('inpFurnace');
+
+let furnaces = {};   // name -> DOM kart nesnesi
+let orders = [];
+let alarmHistory = [];
+
+// ------------------------------------------------------------------ başlat
+
+async function init() {
+  try {
+    const [fResp, oResp] = await Promise.all([
+      fetch('/api/furnaces'), fetch('/api/orders')
+    ]);
+    const fData = await fResp.json();
+    const oData = await oResp.json();
+    orders = oData;
+    buildFurnaceCards(fData);
+    renderOrders();
+  } catch (e) {
+    console.error('Başlatma hatası:', e);
+  }
+
+  const ws = new WebSocket(WS_URL);
+  ws.onopen = () => {
+    wsDot.className = 'ws online';
+    wsStatus.textContent = 'Canlı veri akışı aktif';
+  };
+  ws.onclose = () => {
+    wsDot.className = 'ws offline';
+    wsStatus.textContent = 'Bağlantı koptu, yeniden deneniyor…';
+    setTimeout(() => location.reload(), 3000);
+  };
+  ws.onerror = () => { wsDot.className = 'ws offline'; };
+  ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.type === 'tick') {
+      updateFurnaces(msg.furnaces);
+      orders = msg.orders;
+      renderOrders();
+      renderAlarms(msg.furnaces, msg.ts);
+    }
+  };
+}
+
+// ------------------------------------------------------------------ fırınlar
+
+function slug(name) { return name.toLowerCase().replace(/[^a-z0-9]+/g, '-'); }
+
+function buildFurnaceCards(data) {
+  furnaceGrid.innerHTML = '';
+  for (const [name, s] of Object.entries(data)) {
+    const id = 'f-' + slug(name);
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.id = id;
+    el.innerHTML = `
+      <h2>${escapeHtml(name)} <span class="type">${escapeHtml(s.type)}</span></h2>
+      <div class="temp-row">
+        <div class="temp" id="t-${slug(name)}">--</div><div class="unit">°C</div>
+      </div>
+      <div class="meta">
+        <span>Hedef: <b id="ht-${slug(name)}">--</b> °C</span>
+        <span>Gaz: <b id="g-${slug(name)}">--</b> m³/s</span>
+        <span>Enerji: <b id="e-${slug(name)}">--</b> m³</span>
+        <span>Evrim: <b id="c-${slug(name)}">--</b> sn</span>
+      </div>
+      <div class="status OFF" id="st-${slug(name)}">KAPALI</div>
+      <div id="br-${slug(name)}" class="meta" style="margin-top:6px;">
+        <b>Brülör:</b> <span id="burner-${slug(name)}">KAPALI</span>
+      </div>
+      <canvas id="sc-${slug(name)}" class="spark"></canvas>
+      <div id="al-${slug(name)}" class="alarm-box">🚨 ALARM: <span id="alarmMsg-${slug(name)}"></span></div>
+    `;
+    furnaceGrid.appendChild(el);
+    furnaces[name] = {
+      el: el, id: slug(name),
+      temps: [], maxSeen: 25, minSeen: 25,
+    };
+  }
+  updateFurnaceSelect(data);
+}
+
+function updateFurnaces(data) {
+  const now = Date.now();
+  for (const [name, s] of Object.entries(data)) {
+    const f = furnaces[name];
+    if (!f) continue;
+
+    document.getElementById('t-' + f.id).textContent = s.temperature.toFixed(1);
+    document.getElementById('ht-' + f.id).textContent = s.target_temperature.toFixed(1);
+    document.getElementById('g-' + f.id).textContent = s.gas_consumption.toFixed(2);
+    document.getElementById('e-' + f.id).textContent = s.energy_total.toFixed(2);
+    document.getElementById('c-' + f.id).textContent = s.cycle_time.toFixed(1);
+
+    const stEl = document.getElementById('st-' + f.id);
+    stEl.className = 'status ' + s.status_kodu;
+    stEl.textContent = s.status;
+
+    document.getElementById('burner-' + f.id).textContent = s.burner_on ? 'AÇIK 🔥' : 'KAPALI';
+
+    const alarmEl = document.getElementById('al-' + f.id);
+    const alarmMsg = document.getElementById('alarmMsg-' + f.id);
+    if (s.alarm) {
+      alarmEl.className = 'alarm-box show';
+      alarmMsg.textContent = s.alarm;
+    } else {
+      alarmEl.className = 'alarm-box';
+    }
+
+    // Geçmiş buffer (sparkline)
+    f.temps.push(s.temperature);
+    if (f.temps.length > 60) f.temps.shift();
+    f.maxSeen = Math.max(f.maxSeen, s.temperature);
+    f.minSeen = Math.min(f.minSeen, s.temperature);
+    drawSpark(f);
+  }
+}
+
+function drawSpark(f) {
+  const canvas = document.getElementById('sc-' + f.id);
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width = canvas.parentElement.clientWidth || 260;
+  const h = canvas.height = 52;
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const W = w / dpr, H = h / dpr;
+  ctx.clearRect(0, 0, W, H);
+
+  if (f.temps.length < 2) return;
+  const min = Math.min(...f.temps);
+  const max = Math.max(...f.temps);
+  const range = max - min || 10;
+  const padX = 6;
+  const step = (W - 2 * padX) / (f.temps.length - 1);
+
+  ctx.beginPath();
+  ctx.strokeStyle = '#38bdf8';
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  f.temps.forEach((t, i) => {
+    const y = H - 10 - ((t - min) / range) * (H - 20);
+    const x = padX + i * step;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // hedef satırı (son hedef)
+  ctx.strokeStyle = 'rgba(56,189,248,0.35)';
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(padX, H - 10 - ((f.temps[f.temps.length-1] - min) / range) * (H - 20));
+  // basitlik için hedef çizgisi atılmaz (kanalda gösterilmiyor)
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function updateFurnaceSelect(data) {
+  inpFurnace.innerHTML = '';
+  for (const name of Object.keys(data)) {
+    const o = document.createElement('option');
+    o.value = name; o.textContent = name;
+    inpFurnace.appendChild(o);
+  }
+}
+
+// ------------------------------------------------------------------ emirler
+
+function fmtDate(ts) {
+  if (!ts) return '—';
+  return new Date(ts * 1000).toLocaleTimeString('tr-TR', { hour12: false });
+}
+
+function renderOrders() {
+  ordersTbody.innerHTML = '';
+  for (const o of orders) {
+    const tr = document.createElement('tr');
+    const running = o.state === 'RUNNING';
+    tr.innerHTML = `
+      <td><b>${escapeHtml(o.id)}</b></td>
+      <td>${escapeHtml(o.product)}</td>
+      <td>${escapeHtml(o.furnace)}</td>
+      <td>${o.target_temp.toFixed(0)} °C</td>
+      <td>${o.duration_min} dk</td>
+      <td><span class="badge ${o.state}">${o.state}</span></td>
+      <td>
+        ${o.state === 'CREATED'
+          ? `<button class="secondary" onclick="startOrder('${o.id}')">Başlat</button>`
+          : running ? 'Çevrim devam ediyor…' : (fmtDate(o.finished_at) + ' tamamlandı')}
+      </td>
+    `;
+    ordersTbody.appendChild(tr);
+  }
+}
+
+async function startOrder(orderId) {
+  const furnace = inpFurnace.value;
+  if (!furnace) { alert('Lütfen bir fırın seçin.'); return; }
+  try {
+    const res = await fetch('/api/orders/' + encodeURIComponent(orderId) + '/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ furnace: furnace }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+  } catch (e) {
+    alert('Başlatılamadı: ' + e);
+  }
+}
+
+document.getElementById('btnCreateOrder').addEventListener('click', async () => {
+  const product = document.getElementById('inpProduct').value.trim();
+  const furnace = inpFurnace.value;
+  const target = parseFloat(document.getElementById('inpTarget').value);
+  const duration = parseFloat(document.getElementById('inpDuration').value);
+  if (!product || !furnace || !target || !duration) {
+    alert('Tüm alanları doldurun.'); return;
+  }
+  try {
+    const res = await fetch('/api/orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ product, furnace, target_temp: target, duration_min: duration }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    document.getElementById('inpProduct').value = '';
+  } catch (e) {
+    alert('Oluşturulamadı: ' + e);
+  }
+});
+
+// ------------------------------------------------------------------ alarmlar
+
+function renderAlarms(furnacesData, ts) {
+  let active = [];
+  for (const [name, s] of Object.entries(furnacesData)) {
+    if (s.alarm) active.push({ time: ts, furnace: name, message: s.alarm });
+  }
+  if (active.length) {
+    alarmHistory = active.slice(-10).concat(alarmHistory).slice(0, 30);
+  }
+  if (alarmHistory.length === 0) {
+    alarmsBox.innerHTML = '<div class="muted">Şu anda aktif alarm yok.</div>';
+    return;
+  }
+  alarmsBox.innerHTML = alarmHistory.map(a =>
+    `<div class="alarm-item"><span class="time">${fmtDate(a.time)}</span><b>${escapeHtml(a.furnace)}:</b> ${escapeHtml(a.message)}</div>`
+  ).join('');
+}
+
+function escapeHtml(t) {
+  return String(t == null ? '' : t)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+init();
+</script>
+</body>
+</html>
