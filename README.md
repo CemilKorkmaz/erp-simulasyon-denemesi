@@ -26,6 +26,69 @@ Simüle edilen fırınlar (rehberdeki ekipmanlarla birebir):
 2. **Homojenizasyon Fırını** — iç/bölgesel sıcaklık modeli, ısıtma-bekletme çevrimi, reçete/parametre
 3. **Biyet Isıtma Fırını** — biyet sıcaklığı, ısıtma süresi, ürün adedi, üretim durumu
 
+## Test modu: ERP'nin bütün zincirini dene
+
+Bu simülasyon artık **salt izleme** değil — ERP'ndeki her davranışı
+sınayabileceğin bir test ortamı. Ayrıntılı rehber: **[ENTEGRASYON.md](ENTEGRASYON.md)**
+
+### Hızlı başlangıç
+
+```bash
+# Test modu: PLC yazma açık, 25x hız
+ERP_PLC_WRITE=1 SIM_SPEED=25 ./start.sh 25
+```
+
+Arayüzün altındaki **🧪 Test Konsolu** ile kod yazmadan:
+
+| Düğme | Tetiklediği senaryo |
+|-------|---------------------|
+| Yaz / Başlat / Durdur / Alarm Onayla | ERP → PLC yazma komutları |
+| Ağ Kesintisi | 503 servis yok (bağlantı koptu) |
+| Bayat Veri | `quality: STALE` |
+| Sensör Hatası | `quality: BAD`, `sensor_ok: false` |
+| Aşırı Sıcaklık | Mandallı ALARM + brülör kapanır |
+| Güç Kesintisi | Tüm fırınlar KAPALI |
+| Temizle | Tüm arızaları sıfırlar |
+
+### Test yazma uçları
+
+| Uç | Ne yapar |
+|----|----------|
+| `POST /api/plc/set-target` | Hedef sıcaklık yaz (güvenlik sınırı dışı → 400) |
+| `POST /api/plc/start` | Emir vererek fırını başlat (meşgulse → 400) |
+| `POST /api/plc/stop` | Fırını durdur (alarm silinmez) |
+| `POST /api/plc/reset-alarm` | Mandallı alarmı onayla (sıcakken → 400) |
+| `POST /api/plc/signals` | Sinyal yaz (test) |
+| `GET /api/plc/commands` | Denetim izi: kim ne yazdı, PLC ne cevap verdi |
+| `GET /api/meta` | Sağlık + veri kalitesi + yetenekler |
+
+Yazma uçları **varsayılan kapalıdır**; `ERP_PLC_WRITE=1` ile açılır. Kapalıyken
+400 döner ve ERP'ndeki "PLC'ye yazma" kodunun hata yakalama yolunu test edebilirsin.
+
+### Sistem kendi kendini sınasın
+
+```bash
+python3 tools/system_test.py     # 46 test, 11 grup, ~35 saniye
+```
+
+### Fırınlar artık aynı şekilde çalışıyor
+
+Eskiden varsayılan 750 °C hedef, max 620 °C'lik Homojenizasyon Fırınında alarm
+tetikleyip fırını kapatıyordu; ayrıca doğrusal ısınma eğrisi hedefe hiç
+ulaşmıyordu. İkisi de düzeltildi:
+
+| Fırın | Max | Hedefe ulaşma |
+|-------|-----|---------------|
+| Alüminyum Eritme | 850 °C | ~12 sim-dakikası |
+| Homojenizasyon | 620 °C | ~12 sim-dakikası |
+| Biyet Isıtma | 540 °C | ~12 sim-dakikası |
+
+Arayüz artık fırın seçilince hedefi otomatik olarak o fırının güvenli
+değerine çekiyor ve `fill_minutes` ile kalibre edilmiş üstel ısınma modeli
+kullanıyor — 1x, 10x, 25x, 50x hızda sonuç aynı.
+
+---
+
 ## Kurulum ve çalıştırma
 
 ### En kolay yol: çift tıkla (terminal yok)
@@ -177,7 +240,7 @@ Dockerfile / docker-compose.yml  # İsteğe bağlı konteyner çalıştırmak i�
 ## Notlar
 
 - Bu bir **test/simülasyon ortamıdır**, üretimde doğrudan kullanılamaz.
-- Tüm veriler bilgisayarındaーカル yerel `erp_sim.db` dosyasında tutulur; ağa açılmamalıdır.
+- Tüm veriler bilgisayarında yerel `erp_sim.db` dosyasında tutulur; ağa açılmamalıdır.
 - Canlı önizleme (port 8000) sadece bu oturum için geçerdir.
 
 ---

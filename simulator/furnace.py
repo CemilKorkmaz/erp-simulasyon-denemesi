@@ -40,6 +40,12 @@ class FurnaceParams:
     cool_rate: float = 0.03          # Soğuma katsayısı (1/sn)
     hold_band: float = 5.0           # Bekletme bandı (derece)
     gas_consumption_full: float = 120.0  # Brülör açıkken m3/saat
+    # Bu fırının soğuk halden hedef sıcaklığa ulaşma süresi (dakika).
+    # heat_rate buradan hesaplanır; böylece 480 °C'lik fırın da, 750 °C'lik
+    # fırın da aynı "gerçekçi" dolum süresine sahip olur. Önceden yükselen
+    # hedefe yaklaşırken ısıtma yavaşladığı için homojenizasyon fırını
+    # hedefe HİÇ ulaşamıyordu (66 dakika + hiç bitmiyordu).
+    fill_minutes: float = 20.0
 
 
 @dataclass
@@ -89,6 +95,18 @@ class Furnace:
         self._soak_started_sim = None
         self.state.alarm = None
 
+    def reset_alarm(self) -> bool:
+        """Mandallı alarmı onaylar (acknowledge). Sıcaklık güvenli değilse
+        reddeder. Dönen değer: işlem yapıldı mı."""
+        if self.state.alarm is None:
+            return False
+        if self.state.temperature >= self.params.max_temp - 10.0:
+            return False
+        self.state.alarm = None
+        self.state.status = FurnaceStatus.OFF
+        self.state.burner_on = False
+        return True
+
     def complete_order(self) -> Optional[dict]:
         """Çevrim tamamlandıysa emri kapatır ve özet döndürür."""
         if self.order_id is None:
@@ -123,12 +141,13 @@ class Furnace:
         # ---- Durum makinesi ----
         if s.status == FurnaceStatus.ALARM:
             s.burner_on = False
-            # Sıcaklık güvenli seviyeye düştüğünde alarm otomatik temizlenir,
-            # fırın KAPALI durumuna döner.
-            if s.temperature < p.max_temp - 10.0:
-                s.status = FurnaceStatus.OFF
-                s.alarm = None
-                events.append({"type": "alarm_cleared", "furnace": p.name})
+            # MANDALLI (latched) ALARM: gerçek SCADA/PLC davranışı.
+            # Sıcaklık düşse bile alarm KENDİLİĞİNDEN silinmez; operatör
+            # (veya ERP) alarmı açıkça onaylayana kadar durur. Önceden
+            # alarm ~1 saniyede kendiliğinden siliniyordu ve ERP tarafı
+            # alarm testini hiç göremiyordu.
+            # Onay: Furnace.reset_alarm() veya /api/plc/reset-alarm
+            pass
         elif s.status == FurnaceStatus.OFF:
             s.burner_on = False
         elif s.status == FurnaceStatus.HEATING:
@@ -174,16 +193,20 @@ class Furnace:
             events.append({"type": "alarm", "furnace": p.name,
                            "temperature": s.temperature, "message": s.alarm})
 
-        # ---- Termal fizigi (birinci merkezli model) ----
+        # ---- Termal fizik ----
+        # Üstel (Newton soğuma/ısınma) yaklaşımı:
+        #   T(t) = hedef + (T0 - hedef) * e^(-k*t)
+        # k, fırının "dolum süresi"nden hesaplanır (fill_minutes). Böylece
+        #  - Sıcaklık hedefe gerçekten yaklaşır ve pratikte ulaşır (eski
+        #    doğrusal model hedefe asla tam ulaşmıyordu).
+        #  - Farklı hedef sıcaklıkları aynı gerçekçi sürede dolar.
+        #  - SIM_SPEED ile uyumludur: dt büyüdüğünde eğri aynı kalır.
         if s.burner_on and s.status in (FurnaceStatus.HEATING, FurnaceStatus.HOLDING):
-            # Hedefe doğru yavaşlayan eğrili ısalama:
-            # başlangıçta heat_rate, hedefe yaklaştıkça sıfıra iner.
-            progress = (s.temperature - p.ambient_temp) / max(
-                s.target_temperature - p.ambient_temp, 1.0)
-            dT = p.heat_rate * max(0.0, 1.0 - progress) * dt * 0.55
+            k = 3.0 / max(p.fill_minutes * 60.0, 1.0)
+            dT = (s.target_temperature - s.temperature) * (1.0 - math.exp(-k * dt))
         else:
-            # Isıtma kapalıyken ortam sıcaklığına doğru çarpısmalı soğuma.
-            dT = -p.cool_rate * (s.temperature - p.ambient_temp) * dt
+            # Isıtma kapalıyken ortam sıcaklığına doğru çarpımsal soğuma.
+            dT = (p.ambient_temp - s.temperature) * (1.0 - math.exp(-p.cool_rate * dt))
 
         s.temperature += dT
         if s.temperature < p.ambient_temp:

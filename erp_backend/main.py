@@ -29,6 +29,8 @@ from pydantic import BaseModel
 from simulator.plant import Plant
 from simulator.opcua_server import run_opcua_server
 from simulator.furnace import FurnaceParams
+from simulator.plc_writer import PlcWriteController, KONTROL_SINYALLERI
+from simulator.faults import FaultInjector
 from erp_backend.database import Database
 
 # ------------------------------------------------------------------ ayarlar
@@ -64,6 +66,7 @@ plant.add_furnace(FurnaceParams(
     cool_rate=0.03,
     hold_band=5.0,
     gas_consumption_full=120.0,
+    fill_minutes=6.0,    # 750 °C'ye ~10.5 sim-dakikasında ulaşır
 ))
 plant.add_furnace(FurnaceParams(
     name="Homojenizasyon Fırını",
@@ -75,6 +78,7 @@ plant.add_furnace(FurnaceParams(
     cool_rate=0.03,
     hold_band=4.0,
     gas_consumption_full=80.0,
+    fill_minutes=6.0,
 ))
 plant.add_furnace(FurnaceParams(
     name="Biyet Isıtma Fırını",
@@ -86,7 +90,18 @@ plant.add_furnace(FurnaceParams(
     cool_rate=0.03,
     hold_band=4.0,
     gas_consumption_full=60.0,
+    fill_minutes=6.0,
 ))
+
+
+# ------------------------------------------------------------------ sanal PLC yazma
+
+# ERP'nin fırınlara YAZMASINI test edebilmek için ters yön.
+# Gerçek sahada bu kapalıdır; test için ERP_PLC_WRITE=1 ile açılır.
+PLC = PlcWriteController(plant, enabled=os.environ.get("ERP_PLC_WRITE", "0") == "1")
+
+# Arıza/kesinti enjeksiyonu (bayat veri, sensör hatası, aşırı sıcaklık...)
+FAULTS = FaultInjector()
 
 
 # ------------------------------------------------------------------ websocket
@@ -132,8 +147,12 @@ async def simulation_loop() -> None:
     """
     while True:
         await asyncio.sleep(LOOP_DT)
+        # Ağ/PLC kesintisi: fizik ilerlemez, veri donar. Servis ayakta kalır.
+        if FAULTS.state.offline:
+            continue
         # Hız her adımda okunur: arayüzden değiştirilince hemen etki eder.
         events = plant.update(LOOP_DT * SIM_SPEED)
+
         states = plant.get_states()
         orders = plant.get_orders()
 
@@ -207,18 +226,55 @@ async def index():
     return FileResponse(INDEX_HTML)
 
 
+def durum_yaniti() -> dict:
+    """Fırın durumları + veri kalitesi + bağlantı bilgisi.
+
+    ERP bu yanıttaki `_meta.quality` alanına bakarak verinin GOOD/STALE/BAD
+    olduğunu anlar (doküman §8.2). Kesintide `offline: true` döner.
+    """
+    states = plant.get_states()
+    st = FAULTS.state
+    for s in states.values():
+        s["quality"] = st.quality
+        s["simulated"] = True
+        # Sensör hatasında ölçüm güvenilmez; alarm üretilmez (sadece BAD etiketi)
+        if st.sensor_fault:
+            s["sensor_ok"] = False
+    return states
+
+
 @app.get("/api/furnaces")
 async def list_furnaces():
-    return plant.get_states()
+    if FAULTS.state.offline:
+        raise HTTPException(503, "PLC bağlantısı yok (simülasyon kesintisi)")
+    return durum_yaniti()
 
 
 @app.get("/api/furnaces/{name}")
 async def get_furnace(name: str):
-    states = plant.get_states()
+    if FAULTS.state.offline:
+        raise HTTPException(503, "PLC bağlantısı yok (simülasyon kesintisi)")
+    states = durum_yaniti()
     if name not in states:
         raise HTTPException(status_code=404, detail="Fırın bulunamadı")
     return states[name]
 
+
+@app.get("/api/meta")
+async def api_meta():
+    """ERP'nin tek çağrıda göreceği sağlık + kalite + yetenek bilgisi."""
+    return {
+        "health": not FAULTS.state.offline,
+        "quality": FAULTS.state.quality,
+        "offline": FAULTS.state.offline,
+        "stale": FAULTS.state.stale,
+        "sensor_fault": FAULTS.state.sensor_fault,
+        "note": FAULTS.state.note,
+        "sim_speed": SIM_SPEED,
+        "plc_write": PLC.enabled,
+        "furnaces": list(plant.furnaces),
+        "version": "2.0-test",
+    }
 
 @app.get("/api/orders")
 async def list_orders():
@@ -275,6 +331,156 @@ async def set_speed(data: SpeedIn):
     speed = max(0.1, min(float(data.speed), 100.0))
     SIM_SPEED = speed
     return {"speed": SIM_SPEED}
+
+
+# ------------------------------------------------------------------ arıza enjeksiyonu
+#
+# ERP'nizi kötü senaryolara hazırlamak için. Hepsi tek çağrıyla açılır/kapanır.
+
+
+@app.get("/api/test/faults")
+async def test_faults():
+    return FAULTS.snapshot()
+
+
+@app.post("/api/test/faults/offline")
+async def test_fault_offline(payload: dict | None = None):
+    """PLC/ağ kesintisi: veri akışı durur, uçlar 503 döner."""
+    p = payload or {}
+    return FAULTS.set_offline(bool(p.get("aktif", True)), p.get("note", ""))
+
+
+@app.post("/api/test/faults/stale")
+async def test_fault_stale(payload: dict | None = None):
+    """Bayat veri: servis ayakta ama yeni ölçüm gelmiyor (STALE)."""
+    p = payload or {}
+    return FAULTS.set_stale(bool(p.get("aktif", True)), p.get("note", ""))
+
+
+@app.post("/api/test/faults/sensor")
+async def test_fault_sensor(payload: dict | None = None):
+    """Sensör hatası: sıcaklık okuması BAD."""
+    p = payload or {}
+    return FAULTS.set_sensor_fault(bool(p.get("aktif", True)), p.get("note", ""))
+
+
+@app.post("/api/test/faults/overheat")
+async def test_fault_overheat(payload: dict | None = None):
+    """Fırını güvenlik sınırının üstüne çıkar (alarm testi)."""
+    p = payload or {}
+    furnace = p.get("furnace") or next(iter(plant.furnaces))
+    return FAULTS.overheat(plant, furnace, float(p.get("fazla", 25)))
+
+
+@app.post("/api/test/faults/power-loss")
+async def test_fault_power_loss():
+    """Güç kesintisi: tüm fırınlar KAPALI'ya düşer."""
+    return FAULTS.power_loss(plant)
+
+
+@app.post("/api/test/faults/clear")
+async def test_fault_clear():
+    """Tüm arızaları temizle."""
+    return FAULTS.clear_all()
+
+
+# ------------------------------------------------------------------ sanal PLC uçları
+#
+# Doküman §8: gerçek sahada ERP **okur**, PLC'ye **yazmaz**.
+# Simülasyonda ise "ERP'den fırına emir" tarafını da test edebilmen için
+# ters yön açılır. Varsayılan KAPALIDIR; ERP_PLC_WRITE=1 ile açılır.
+
+
+@app.get("/api/plc/health")
+async def plc_health():
+    """PLC yazma yeteneği açık mı? ERP'niz bunu kontrol edebilir."""
+    return {
+        "yazma_aktif": PLC.enabled,
+        "aciklama": "Kapalıysa sadece okuma yapılabilir (üretim önerisi)",
+        "sinyaller": list(KONTROL_SINYALLERI),
+        "furnaces": list(plant.furnaces),
+        "nasil_acilir": "Sunucuyu ERP_PLC_WRITE=1 ile başlat",
+    }
+
+
+@app.get("/api/plc/snapshot")
+async def plc_snapshot():
+    """SCADA benzeri tam görüntü: dört sinyal + telemetri + son komutlar."""
+    return PLC.snapshot()
+
+
+@app.get("/api/plc/signals")
+async def plc_signals():
+    return PLC.read_all_signals()
+
+
+@app.get("/api/plc/commands")
+async def plc_commands(limit: int = 50):
+    """Son yazma komutlarının kaydı (kim, ne zaman, sonuç)."""
+    return [c.to_dict() for c in PLC.commands[-limit:]][::-1]
+
+
+@app.post("/api/plc/set-target")
+async def plc_set_target(payload: dict):
+    furnace = payload.get("furnace")
+    target = payload.get("target")
+    if not furnace or target is None:
+        raise HTTPException(400, "furnace ve target alanları zorunlu")
+    cmd = PLC.set_target(furnace, float(target), source=payload.get("source", "ERP"))
+    if not cmd.ok:
+        raise HTTPException(400, cmd.message)
+    return cmd.to_dict()
+
+
+@app.post("/api/plc/start")
+async def plc_start(payload: dict):
+    furnace = payload.get("furnace")
+    if not furnace:
+        raise HTTPException(400, "furnace alanı zorunlu")
+    cmd = PLC.start(
+        furnace,
+        source=payload.get("source", "ERP"),
+        product=payload.get("product", "ERP Emri"),
+        duration_min=float(payload.get("duration_min", 5)),
+        target=payload.get("target"),
+    )
+    if not cmd.ok:
+        raise HTTPException(400, cmd.message)
+    return cmd.to_dict()
+
+
+@app.post("/api/plc/stop")
+async def plc_stop(payload: dict):
+    furnace = payload.get("furnace")
+    if not furnace:
+        raise HTTPException(400, "furnace alanı zorunlu")
+    cmd = PLC.stop(furnace, source=payload.get("source", "ERP"))
+    if not cmd.ok:
+        raise HTTPException(400, cmd.message)
+    return cmd.to_dict()
+
+
+@app.post("/api/plc/reset-alarm")
+async def plc_reset_alarm(payload: dict):
+    furnace = payload.get("furnace")
+    if not furnace:
+        raise HTTPException(400, "furnace alanı zorunlu")
+    cmd = PLC.reset_alarm(furnace, source=payload.get("source", "ERP"))
+    if not cmd.ok:
+        raise HTTPException(400, cmd.message)
+    return cmd.to_dict()
+
+
+@app.post("/api/plc/signals")
+async def plc_write_signals(payload: dict):
+    furnace = payload.get("furnace")
+    signals = payload.get("signals")
+    if not furnace or not isinstance(signals, dict):
+        raise HTTPException(400, "furnace ve signals sözlüğü zorunlu")
+    cmd = PLC.set_signals(furnace, signals, source=payload.get("source", "ERP"))
+    if not cmd.ok:
+        raise HTTPException(400, cmd.message)
+    return cmd.to_dict()
 
 
 @app.get("/api/readings/{furnace}")

@@ -98,6 +98,26 @@
   .speed-btns button.active { background: #2563eb; color: #fff; }
   .speed-btns button:disabled { opacity: 0.4; }
   #speedInfo { font-size: 11px; color: #64748b; min-width: 54px; }
+  /* Test konsolu */
+  .test-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+  .test-box { background: #0b1120; border: 1px solid #334155; border-radius: 10px; padding: 12px 14px; }
+  .test-baslik { font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; color: #94a3b8; margin-bottom: 10px; font-weight: 700; }
+  .test-satir { margin-bottom: 10px; }
+  .test-satir label { display: block; font-size: 12px; color: #94a3b8; margin-bottom: 4px; }
+  .test-inline { display: flex; gap: 6px; align-items: center; }
+  .test-inline button { padding: 6px 11px; font-size: 12px; }
+  .test-inline select { max-width: 165px; }
+  button.danger { background: #b91c1c; }
+  button.danger:hover { background: #dc2626; }
+  button.warn { background: #b45309; }
+  button.warn:hover { background: #d97706; }
+  button.danger.on, button.warn.on { outline: 2px solid #f8fafc; }
+  .test-msg { font-size: 12px; margin-top: 8px; min-height: 16px; color: #94a3b8; line-height: 1.4; }
+  .test-msg.ok { color: #86efac; }
+  .test-msg.err { color: #fca5a5; }
+  .test-status div { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; color: #94a3b8; }
+  .test-status b { color: #e2e8f0; }
+
   @media (max-width: 820px) {
     header { flex-wrap: wrap; }
     .speed-box { margin-left: 0; width: 100%; }
@@ -153,6 +173,64 @@
       <div class="muted">Şu anda aktif alarm yok.</div>
     </div>
   </section>
+
+  <section style="grid-column: 1 / -1;">
+    <h3>🧪 Test Konsolu <span class="muted" style="font-weight:400;text-transform:none;">— ERP'ni bağlamadan kötü senaryoları tetikle</span></h3>
+
+    <div class="test-grid">
+      <div class="test-box">
+        <div class="test-baslik">Fırın &amp; PLC</div>
+        <div class="test-satir">
+          <label>Hedef sıcaklık yaz (ERP → PLC)</label>
+          <div class="test-inline">
+            <select id="tFurnace" class="furnace-select"></select>
+            <input id="tTarget" type="number" placeholder="°C" value="700" style="max-width:100px;">
+            <button id="btnSetTarget">Yaz</button>
+          </div>
+        </div>
+        <div class="test-satir">
+          <div class="test-inline">
+            <button id="btnTStart" class="secondary">Başlat</button>
+            <button id="btnTStop" class="secondary">Durdur</button>
+            <button id="btnTReset" class="secondary">Alarm Onayla</button>
+          </div>
+        </div>
+        <div id="tMsg" class="test-msg"></div>
+      </div>
+
+      <div class="test-box">
+        <div class="test-baslik">Arıza Senaryoları</div>
+        <div class="test-inline" style="flex-wrap:wrap;">
+          <button id="btnFOffline" class="danger">Ağ Kesintisi</button>
+          <button id="btnFStale" class="warn">Bayat Veri</button>
+          <button id="btnFSensor" class="warn">Sensör Hatası</button>
+          <button id="btnFOverheat" class="danger">Aşırı Sıcaklık</button>
+          <button id="btnFPower" class="danger">Güç Kesintisi</button>
+          <button id="btnFClear">Temizle</button>
+        </div>
+        <div id="fMsg" class="test-msg"></div>
+      </div>
+
+      <div class="test-box">
+        <div class="test-baslik">Durum</div>
+        <div id="tStatus" class="test-status">
+          <div><span>Bağlantı:</span> <b id="sHealth">—</b></div>
+          <div><span>Veri kalitesi:</span> <b id="sQuality">—</b></div>
+          <div><span>PLC yazma:</span> <b id="sWrite">—</b></div>
+          <div><span>Sim. hızı:</span> <b id="sSpeed">—</b></div>
+          <div><span>Komut sayısı:</span> <b id="sCmds">—</b></div>
+        </div>
+      </div>
+    </div>
+
+    <details style="margin-top:12px;">
+      <summary class="muted" style="cursor:pointer;">Son PLC komutları (denetim izi)</summary>
+      <table id="cmdTable" style="margin-top:8px;">
+        <thead><tr><th>#</th><th>Saat</th><th>İşlem</th><th>Fırın</th><th>Sonuç</th><th>Mesaj</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </details>
+  </section>
 </main>
 
 <script>
@@ -164,6 +242,12 @@ const ordersTbody = document.querySelector('#ordersTable tbody');
 const alarmsBox = document.getElementById('alarms');
 const inpFurnace = document.getElementById('inpFurnace');
 const btnReconnect = document.getElementById('btnReconnect');
+
+if (inpFurnace) {
+  inpFurnace.addEventListener('change', () => {
+    if (typeof syncTargetToFurnace === 'function') syncTargetToFurnace();
+  });
+}
 
 let furnaces = {};   // name -> DOM kart nesnesi
 let orders = [];
@@ -340,6 +424,8 @@ async function init() {
   await loadSpeed();
   await loadSnapshot();
   connectWs();
+  refreshTestStatus();
+  setInterval(refreshTestStatus, 3000);
 }
 
 // ------------------------------------------------------------------ fırınlar
@@ -455,12 +541,46 @@ function drawSpark(f) {
   ctx.setLineDash([]);
 }
 
+let furnaceMeta = {};   // name -> {target_temperature, max_temperature, temperature}
+
 function updateFurnaceSelect(data) {
-  inpFurnace.innerHTML = '';
-  for (const name of Object.keys(data)) {
-    const o = document.createElement('option');
-    o.value = name; o.textContent = name;
-    inpFurnace.appendChild(o);
+  const oncekiSecim = inpFurnace.value;
+  const secenekler = Object.keys(data);
+
+  // Seçenek listesi zaten doğruysa yeniden kurma (seçim kaybolmasın).
+  const mevcut = Array.from(inpFurnace.options).map(o => o.value);
+  if (mevcut.length !== secenekler.length ||
+      mevcut.some((v, i) => v !== secenekler[i])) {
+    inpFurnace.innerHTML = '';
+    for (const name of secenekler) {
+      const o = document.createElement('option');
+      o.value = name; o.textContent = name;
+      inpFurnace.appendChild(o);
+    }
+    if (oncekiSecim && secenekler.includes(oncekiSecim)) inpFurnace.value = oncekiSecim;
+  }
+
+  // Her fırının hedef/sınır bilgisini sakla.
+  for (const [name, s] of Object.entries(data)) {
+    furnaceMeta[name] = {
+      target: s.target_temperature,
+      max: s.max_temperature,
+      temp: s.temperature,
+    };
+  }
+  // Seçili fırının güvenlik sınırını hedef alanına yaz (alarm tuzağını önler).
+  syncTargetToFurnace();
+  if (typeof syncTestFurnaces === 'function') syncTestFurnaces(data);
+}
+
+function syncTargetToFurnace() {
+  const m = furnaceMeta[inpFurnace.value];
+  const inp = document.getElementById('inpTarget');
+  if (m && m.max) {
+    // Fırının kendi hedefi (nominal) — max'ın altında olduğu garanti.
+    if (m.target) inp.value = Math.round(m.target);
+    inp.max = m.max;
+    inp.title = `Bu fırının güvenlik sınırı ${m.max} °C. Üstünde değer girersen fırın ALARM'a düşer.`;
   }
 }
 
@@ -571,6 +691,170 @@ function renderAlarms(furnacesData, ts) {
 function escapeHtml(t) {
   return String(t == null ? '' : t)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+
+// ------------------------------------------------------------------ test konsolu
+
+const TEST_FURNACE = document.getElementById('tFurnace');
+
+function tMsg(text, tip) {
+  const el = document.getElementById('tMsg');
+  el.textContent = text;
+  el.className = 'test-msg ' + (tip || '');
+}
+function fMsg(text, tip) {
+  const el = document.getElementById('fMsg');
+  el.textContent = text;
+  el.className = 'test-msg ' + (tip || '');
+}
+
+async function testCall(yol, govde) {
+  const res = await fetch(yol, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(govde || {}),
+  });
+  let veri = null;
+  try { veri = await res.json(); } catch (e) { veri = null; }
+  if (!res.ok) {
+    const detay = (veri && (veri.detail || veri.message)) || ('HTTP ' + res.status);
+    throw new Error(detay);
+  }
+  return veri;
+}
+
+function syncTestFurnaces(data) {
+  const adlar = Object.keys(data);
+  const mevcut = Array.from(TEST_FURNACE.options).map(o => o.value);
+  if (mevcut.length === adlar.length && mevcut.every((v, i) => v === adlar[i])) return;
+  const secili = TEST_FURNACE.value;
+  TEST_FURNACE.innerHTML = '';
+  for (const ad of adlar) {
+    const o = document.createElement('option');
+    o.value = ad; o.textContent = ad;
+    TEST_FURNACE.appendChild(o);
+  }
+  if (secili && adlar.includes(secili)) TEST_FURNACE.value = secili;
+}
+
+document.getElementById('btnSetTarget').addEventListener('click', async () => {
+  const furnace = TEST_FURNACE.value;
+  const target = parseFloat(document.getElementById('tTarget').value);
+  try {
+    const d = await testCall('/api/plc/set-target', { furnace, target, source: 'PANEL' });
+    tMsg(d.message, 'ok');
+    await loadSnapshot();
+  } catch (e) {
+    tMsg(e.message, 'err');
+  }
+});
+
+document.getElementById('btnTStart').addEventListener('click', async () => {
+  try {
+    const d = await testCall('/api/plc/start', {
+      furnace: TEST_FURNACE.value, duration_min: 2, product: 'Panel Testi', source: 'PANEL',
+    });
+    tMsg(d.message, 'ok');
+    await loadSnapshot();
+  } catch (e) { tMsg(e.message, 'err'); }
+});
+
+document.getElementById('btnTStop').addEventListener('click', async () => {
+  try {
+    const d = await testCall('/api/plc/stop', { furnace: TEST_FURNACE.value, source: 'PANEL' });
+    tMsg(d.message, 'ok');
+    await loadSnapshot();
+  } catch (e) { tMsg(e.message, 'err'); }
+});
+
+document.getElementById('btnTReset').addEventListener('click', async () => {
+  try {
+    const d = await testCall('/api/plc/reset-alarm', { furnace: TEST_FURNACE.value, source: 'PANEL' });
+    tMsg(d.message, 'ok');
+    await loadSnapshot();
+  } catch (e) { tMsg(e.message, 'err'); }
+});
+
+function faultBtn(id, yol, govde, aktifMetin, bosMetin) {
+  const btn = document.getElementById(id);
+  btn.addEventListener('click', async () => {
+    const acik = !btn.classList.contains('on');
+    try {
+      const d = await testCall(yol, Object.assign({ aktif: acik }, govde || {}));
+      btn.classList.toggle('on', acik);
+      btn.textContent = acik ? aktifMetin : bosMetin;
+      fMsg((d.mesaj || d.note || 'Tamam') + (acik ? ' — AÇIK' : ' — KAPALI'), 'ok');
+      await loadSnapshot();
+    } catch (e) { fMsg('Hata: ' + e.message, 'err'); }
+  });
+}
+
+faultBtn('btnFOffline', '/api/test/faults/offline', {}, 'Kesintiyi Bitir', 'Ağ Kesintisi');
+faultBtn('btnFStale', '/api/test/faults/stale', {}, 'Bayat Veriyi Bitir', 'Bayat Veri');
+faultBtn('btnFSensor', '/api/test/faults/sensor', {}, 'Sensörü Düzelt', 'Sensör Hatası');
+
+document.getElementById('btnFOverheat').addEventListener('click', async () => {
+  try {
+    const d = await testCall('/api/test/faults/overheat', { furnace: TEST_FURNACE.value, fazla: 25 });
+    fMsg(d.mesaj, 'ok');
+    await loadSnapshot();
+  } catch (e) { fMsg('Hata: ' + e.message, 'err'); }
+});
+
+document.getElementById('btnFPower').addEventListener('click', async () => {
+  if (!confirm("Güç kesintisi simüle edilsin mi? Tüm fırınlar KAPALI'ya düşer.")) return;
+  try {
+    const d = await testCall('/api/test/faults/power-loss', {});
+    fMsg(d.mesaj, 'ok');
+    await loadSnapshot();
+  } catch (e) { fMsg('Hata: ' + e.message, 'err'); }
+});
+
+document.getElementById('btnFClear').addEventListener('click', async () => {
+  try {
+    const d = await testCall('/api/test/faults/clear', {});
+    fMsg(d.mesaj, 'ok');
+    // Düğmelerin "açık" durumunu sıfırla
+    [['btnFOffline', 'Ağ Kesintisi'], ['btnFStale', 'Bayat Veri'],
+     ['btnFSensor', 'Sensör Hatası']].forEach(([id, ad]) => {
+      const b = document.getElementById(id);
+      b.classList.remove('on'); b.textContent = ad;
+    });
+    await loadSnapshot();
+  } catch (e) { fMsg('Hata: ' + e.message, 'err'); }
+});
+
+async function refreshTestStatus() {
+  try {
+    const [metaRes, cmdRes] = await Promise.all([
+      fetch('/api/meta'), fetch('/api/plc/commands?limit=12'),
+    ]);
+    if (metaRes.ok) {
+      const m = await metaRes.json();
+      document.getElementById('sHealth').textContent = m.health ? 'Bağlı ✓' : 'KOPUK ✗';
+      document.getElementById('sHealth').style.color = m.health ? '#86efac' : '#fca5a5';
+      const q = document.getElementById('sQuality');
+      q.textContent = m.quality;
+      q.style.color = m.quality === 'GOOD' ? '#86efac' : (m.quality === 'STALE' ? '#fcd34d' : '#fca5a5');
+      document.getElementById('sWrite').textContent = m.plc_write ? 'AÇIK (test)' : 'kapalı (salt okuma)';
+      document.getElementById('sSpeed').textContent = m.sim_speed + 'x';
+    }
+    if (cmdRes.ok) {
+      const cmds = await cmdRes.json();
+      document.getElementById('sCmds').textContent = cmds.length ? cmds[0].seq : 0;
+      const tb = document.querySelector('#cmdTable tbody');
+      tb.innerHTML = '';
+      for (const c of cmds) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${c.seq}</td><td>${escapeHtml(c.saat)}</td>` +
+          `<td>${escapeHtml(c.action)}</td><td>${escapeHtml(c.furnace)}</td>` +
+          `<td style="color:${c.ok ? '#86efac' : '#fca5a5'}">${c.ok ? '✓' : '✗'}</td>` +
+          `<td>${escapeHtml(c.message)}</td>`;
+        tb.appendChild(tr);
+      }
+    }
+  } catch (e) { /* sunucu kapalı */ }
 }
 
 init();
