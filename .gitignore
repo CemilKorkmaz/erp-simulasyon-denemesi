@@ -2,6 +2,8 @@
 __pycache__/
 *.pyc
 erp_sim.db
+erp_sim_data.json
+erp_sim_data.json.tmp
 .DS_Store
 
 # yerel veritabanlari

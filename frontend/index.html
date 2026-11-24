@@ -118,6 +118,37 @@
   .test-status div { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; color: #94a3b8; }
   .test-status b { color: #e2e8f0; }
 
+
+  /* ERP iş zinciri */
+  .erp-kpi { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 12px 0 16px; }
+  .erp-kpi .kpi { background: #0b1120; border: 1px solid #334155; border-radius: 8px; padding: 10px 12px; }
+  .erp-kpi .kpi span { display: block; font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: .5px; }
+  .erp-kpi .kpi b { display: block; font-size: 18px; color: #f1f5f9; margin-top: 4px; }
+  .erp-kpi .kpi small { font-size: 11px; color: #64748b; }
+  .erp-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .erp-tabs button { background: #1e293b; border: 1px solid #334155; color: #cbd5e1; padding: 6px 13px; font-size: 12px; border-radius: 6px; }
+  .erp-tabs button.active { background: #2563eb; border-color: #3b82f6; color: #fff; }
+  .erp-panel { background: #0b1120; border: 1px solid #334155; border-radius: 10px; padding: 14px; min-height: 180px; }
+  .erp-panel h4 { margin: 0 0 10px; font-size: 13px; color: #93c5fd; text-transform: uppercase; letter-spacing: .6px; }
+  .erp-panel .adim { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid #1e293b; font-size: 12px; }
+  .erp-panel .adim:last-child { border: 0; }
+  .erp-panel .adim .no { width: 22px; height: 22px; border-radius: 50%; background: #1e293b; color: #94a3b8; display: grid; place-items: center; font-size: 11px; flex-shrink: 0; }
+  .erp-panel .adim.tamam .no { background: #166534; color: #86efac; }
+  .erp-panel .adim .bilgi { flex: 1; color: #cbd5e1; }
+  .erp-panel .adim .sonuc { color: #64748b; font-size: 11px; }
+  .erp-panel input, .erp-panel select { background: #1e293b; border: 1px solid #334155; color: #e2e8f0; border-radius: 5px; padding: 5px 8px; font-size: 12px; max-width: 110px; }
+  .erp-panel .form-satir { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .erp-panel button { padding: 6px 12px; font-size: 12px; }
+  .erp-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .erp-tablo { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  .erp-tablo th { text-align: left; color: #94a3b8; font-weight: 600; padding: 5px 6px; border-bottom: 1px solid #334155; font-size: 11px; }
+  .erp-tablo td { padding: 4px 6px; border-bottom: 1px solid #1e293b; color: #cbd5e1; }
+  .erp-tablo .ok { color: #86efac; }
+  .erp-tablo .no { color: #fca5a5; }
+  .ekran-liste { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px; }
+  .ekran-liste div { font-size: 11.5px; padding: 5px 8px; border-radius: 5px; background: #111a2e; color: #cbd5e1; border-left: 3px solid #166534; }
+  .ekran-liste div.bos { border-left-color: #991b1b; color: #94a3b8; }
+
   @media (max-width: 820px) {
     header { flex-wrap: wrap; }
     .speed-box { margin-left: 0; width: 100%; }
@@ -230,6 +261,24 @@
         <tbody></tbody>
       </table>
     </details>
+  </section>
+
+  <section style="grid-column: 1 / -1;">
+    <h3>🏢 ERP İş Zinciri <span class="muted" style="font-weight:400;text-transform:none;">— 59 varlık · 35 ekran · 18 hesap motoru</span></h3>
+    <div class="erp-kpi" id="erpKpi"></div>
+
+    <div class="erp-tabs" id="erpTabs">
+      <button data-tab="satin" class="active">Satın Alma</button>
+      <button data-tab="uretim">Üretim</button>
+      <button data-tab="satis">Satış</button>
+      <button data-tab="sevkiyat">Sevkiyat</button>
+      <button data-tab="muhasebe">Muhasebe</button>
+      <button data-tab="stok">Stok</button>
+      <button data-tab="hesap">Hesap Motoru</button>
+      <button data-tab="ekranlar">35 Ekran</button>
+    </div>
+
+    <div class="erp-panel" id="erpPanel"></div>
   </section>
 </main>
 
@@ -856,6 +905,369 @@ async function refreshTestStatus() {
     }
   } catch (e) { /* sunucu kapalı */ }
 }
+
+
+// ------------------------------------------------------------ ERP iş zinciri
+
+const ERP = 'http://' + location.host + '/api/erp';
+let erpAktifSekme = 'satin';
+let erpVeri = {};
+
+async function erpGet(yol) {
+  const r = await fetch(ERP + yol);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+async function erpPost(yol, govde) {
+  const r = await fetch(ERP + yol, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(govde || {}),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+  return d;
+}
+
+function tl(x) {
+  return (x || 0).toLocaleString('tr-TR', { maximumFractionDigits: 0 }) + ' ₺';
+}
+
+async function erpKpiCiz() {
+  try {
+    const k = await erpGet('/kpi');
+    erpVeri.kpi = k;
+    const kartlar = [
+      ['Ciro', tl(k.ciro), 'satış faturaları'],
+      ['Alacak', tl(k.alacak), 'müşteri cari'],
+      ['Borç', tl(k.borc), 'tedarikçi cari'],
+      ['Üretim', (k.uretim_ton || 0).toLocaleString('tr-TR') + ' ton', 'tamamlanan lot'],
+      ['Fire', '%' + (k.fire_orani_yuzde || 0), 'üretim fire oranı'],
+      ['Stok değeri', tl(k.stok_degeri), 'hammadde'],
+      ['Açık sipariş', k.acik_siparis, 'sevk bekleyen'],
+      ['Sevkiyat', k.sevkiyat_sayisi, 'sevk edilen'],
+    ];
+    document.getElementById('erpKpi').innerHTML = kartlar.map(
+      ([a, b, c]) => `<div class="kpi"><span>${a}</span><b>${b}</b><small>${c}</small></div>`
+    ).join('');
+  } catch (e) {
+    document.getElementById('erpKpi').innerHTML =
+      '<div class="kpi" style="grid-column:1/-1;color:#fca5a5;">ERP uçlarına ulaşılamadı: ' + e.message + '</div>';
+  }
+}
+
+async function erpSekme(s) {
+  erpAktifSekme = s;
+  document.querySelectorAll('#erpTabs button').forEach(b =>
+    b.classList.toggle('active', b.dataset.tab === s));
+  const panel = document.getElementById('erpPanel');
+  panel.innerHTML = '<div class="muted">Yükleniyor…</div>';
+  try {
+    if (s === 'satin') await erpSatin(panel);
+    else if (s === 'uretim') await erpUretim(panel);
+    else if (s === 'satis') await erpSatis(panel);
+    else if (s === 'sevkiyat') await erpSevkiyat(panel);
+    else if (s === 'muhasebe') await erpMuhasebe(panel);
+    else if (s === 'stok') await erpStok(panel);
+    else if (s === 'hesap') await erpHesap(panel);
+    else if (s === 'ekranlar') await erpEkranlar(panel);
+  } catch (e) {
+    panel.innerHTML = '<div style="color:#fca5a5;">Hata: ' + e.message + '</div>';
+  }
+}
+
+// --- Satın alma
+async function erpSatin(panel) {
+  const [emirler, talepler] = await Promise.all([
+    erpGet('/purchaseOrders'), erpGet('/purchaseRequests')]);
+  const acik = emirler.kayitlar.filter(e => e.durum !== 'TAMAMLANDI');
+  panel.innerHTML = `
+    <h4>Satın Alma Zinciri</h4>
+    <div class="form-satir">
+      <input id="saMalzeme" value="MAT-0001" placeholder="malzeme">
+      <input id="saMiktar" type="number" value="3000" placeholder="miktar">
+      <button id="saTalep">1. Talep Aç</button>
+    </div>
+    <div class="adim ${talepler.toplam ? 'tamam' : ''}">
+      <div class="no">1</div><div class="bilgi">Talep</div>
+      <div class="sonuc">${talepler.toplam} talep</div></div>
+    <div class="adim ${acik.length ? 'tamam' : ''}">
+      <div class="no">2</div><div class="bilgi">Satın alma emri</div>
+      <div class="sonuc">${emirler.toplam} emir</div></div>
+    <div class="adim"><div class="no">3</div><div class="bilgi">Mal kabul</div>
+      <div class="sonuc">aşağıdaki listeden</div></div>
+    <div id="saMsg" class="test-msg"></div>
+    <table class="erp-tablo" style="margin-top:10px;">
+      <thead><tr><th>Emir</th><th>Tedarikçi</th><th>Malzeme</th><th>Miktar</th><th>Toplam</th><th>Durum</th><th></th></tr></thead>
+      <tbody>${emirler.kayitlar.slice(-8).reverse().map(e => `
+        <tr><td>${e.id}</td><td>${e.tedarikci}</td><td>${e.malzeme}</td>
+        <td>${e.karsilanan}/${e.miktar}</td><td>${tl(e.toplam)}</td>
+        <td class="${e.durum === 'TAMAMLANDI' ? 'ok' : ''}">${e.durum}</td>
+        <td>${e.durum === 'TASLAK' ? `<button data-onay="${e.id}" style="padding:2px 8px;font-size:11px;">Onayla</button>` :
+              (e.durum === 'ONAYLANDI' ? `<button data-kabul="${e.id}" style="padding:2px 8px;font-size:11px;">Mal Kabul</button>` : '')}</td>
+        </tr>`).join('')}</tbody>
+    </table>`;
+
+  document.getElementById('saTalep').onclick = async () => {
+    const m = document.getElementById('saMalzeme').value;
+    const q = parseFloat(document.getElementById('saMiktar').value);
+    try {
+      const t = await erpPost('/satin-alma/talep', { malzeme: m, miktar: q, gerekce: 'Panel' });
+      const tf = await erpPost('/satin-alma/teklif', { talep_id: t.id, tedarikci: 'SUP-0001', birim_fiyat: 2.30 });
+      await erpPost('/satin-alma/teklif-sec', { teklif_id: tf.id });
+      await erpSekme('satin');
+    } catch (e) { document.getElementById('saMsg').textContent = e.message; }
+  };
+  panel.querySelectorAll('[data-onay]').forEach(b => b.onclick = async () => {
+    try { await erpPost('/satin-alma/onayla', { emir_id: b.dataset.onay }); await erpSekme('satin'); }
+    catch (e) { document.getElementById('saMsg').textContent = e.message; }
+  });
+  panel.querySelectorAll('[data-kabul]').forEach(b => b.onclick = async () => {
+    try {
+      await erpPost('/satin-alma/mal-kabul', { emir_id: b.dataset.kabul, brut: 3100, fire: 100 });
+      await erpPost('/satin-alma/fatura', { emir_id: b.dataset.kabul });
+      await erpSekme('satin');
+    } catch (e) { document.getElementById('saMsg').textContent = e.message; }
+  });
+}
+
+// --- Üretim
+async function erpUretim(panel) {
+  const [lotlar, receteler] = await Promise.all([
+    erpGet('/lots'), erpGet('/recipes')]);
+  const acik = lotlar.kayitlar.filter(l => l.durum === 'ACIK');
+  const ASAMA = ['Ergitme', 'Döküm', 'Testere', 'Homojenizasyon', 'Soğutma', 'Paketleme', 'Mamul Stok', 'Sevkiyat'];
+  panel.innerHTML = `
+    <h4>Üretim Akışı — 8 aşama</h4>
+    <div class="form-satir">
+      <button id="urLot">Yeni Döküm Kodu Aç</button>
+      <span class="muted" style="font-size:11px;">reçete: ${receteler.kayitlar[0]?.ad || '-'}</span>
+    </div>
+    <div class="erp-grid2">
+      ${acik.length ? acik.map(l => `
+        <div>
+          <div style="font-size:12px;color:#93c5fd;margin-bottom:6px;">${l.kod} · ${l.urun} · ${l.hedefTon} ton</div>
+          ${ASAMA.map((a, i) => `
+            <div class="adim ${i <= l.asamaIndex ? 'tamam' : ''}">
+              <div class="no">${i + 1}</div><div class="bilgi">${a}</div></div>`).join('')}
+          <button data-ilerle="${l.id}" style="margin-top:6px;">Aşamayı İlerlet</button>
+          ${l.asamaIndex >= 6 ? `<button data-tamamla="${l.id}" class="secondary">Tamamla (14 ton)</button>` : ''}
+        </div>`).join('') : '<div class="muted">Açık lot yok. "Yeni Döküm Kodu Aç" ile başla.</div>'}
+    </div>
+    <div id="urMsg" class="test-msg"></div>
+    <h4 style="margin-top:16px;">Tamamlanan Lotlar</h4>
+    <table class="erp-tablo">
+      <thead><tr><th>Kod</th><th>Ürün</th><th>Net ton</th><th>Fire ton</th><th>Durum</th></tr></thead>
+      <tbody>${lotlar.kayitlar.filter(l => l.durum === 'TAMAMLANDI').slice(-6).reverse()
+        .map(l => `<tr><td>${l.kod}</td><td>${l.urun}</td><td class="ok">${l.netTon || 0}</td>
+          <td>${l.fireTon || 0}</td><td>${l.durum}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">henüz yok</td></tr>'}</tbody>
+    </table>`;
+
+  document.getElementById('urLot').onclick = async () => {
+    try {
+      await erpPost('/uretim/lot', { recete_id: receteler.kayitlar[0].id, firin_makine: 'MCH-01' });
+      await erpSekme('uretim');
+    } catch (e) { document.getElementById('urMsg').textContent = e.message; }
+  };
+  panel.querySelectorAll('[data-ilerle]').forEach(b => b.onclick = async () => {
+    try { await erpPost('/uretim/asama', { lot_id: b.dataset.ilerle }); await erpSekme('uretim'); }
+    catch (e) { document.getElementById('urMsg').textContent = e.message; }
+  });
+  panel.querySelectorAll('[data-tamamla]').forEach(b => b.onclick = async () => {
+    try {
+      const id = b.dataset.tamamla;
+      await erpPost('/uretim/tamamla', { lot_id: id, net_ton: 14, fire_ton: 0.4 });
+      await erpPost('/uretim/maliyet', { lot_id: id, enerji: 3500, sarf: 800, iscilik: 2200 });
+      await erpSekme('uretim');
+    } catch (e) { document.getElementById('urMsg').textContent = e.message; }
+  });
+}
+
+// --- Satış
+async function erpSatis(panel) {
+  const [siparisler, musteriler, maliyetler] = await Promise.all([
+    erpGet('/salesOrders'), erpGet('/customers'), erpGet('/costRecords')]);
+  const ort = maliyetler.kayitlar.length
+    ? maliyetler.kayitlar.reduce((a, c) => a + c.ton_maliyet, 0) / maliyetler.kayitlar.length : 0;
+  panel.innerHTML = `
+    <h4>Satış Siparişleri — kredi kontrolü</h4>
+    <div class="form-satir">
+      <select id="saMusteri">${musteriler.kayitlar.map(m =>
+        `<option value="${m.id}">${m.ad} (${tl(m.bakiye)}/${tl(m.krediLimiti)})</option>`).join('')}</select>
+      <input id="saTon" type="number" value="2" placeholder="ton">
+      <input id="saFiyat" type="number" value="3400" placeholder="TL/ton">
+      <button id="saSip">Sipariş Ver</button>
+      <span class="muted" style="font-size:11px;">ort. maliyet: ${tl(ort)}/ton</span>
+    </div>
+    <div id="saMsj" class="test-msg"></div>
+    <table class="erp-tablo" style="margin-top:8px;">
+      <thead><tr><th>Sipariş</th><th>Müşteri</th><th>Ton</th><th>Tutar</th><th>Durum</th><th>Kâr</th></tr></thead>
+      <tbody>${siparisler.kayitlar.slice(-8).reverse().map(s => {
+        const kar = ort ? (s.birimFiyat - ort) * s.miktarTon : 0;
+        return `<tr><td>${s.id}</td><td>${s.musteri}</td><td>${s.miktarTon}</td>
+          <td>${tl(s.tutar)}</td><td>${s.durum}</td>
+          <td class="${kar >= 0 ? 'ok' : 'no'}">${tl(kar)}</td></tr>`;
+      }).join('') || '<tr><td colspan="6" class="muted">henüz yok</td></tr>'}</tbody>
+    </table>`;
+
+  document.getElementById('saSip').onclick = async () => {
+    const m = document.getElementById('saMusteri').value;
+    const ton = parseFloat(document.getElementById('saTon').value);
+    const fiyat = parseFloat(document.getElementById('saFiyat').value);
+    try {
+      const stok = await erpGet('/stok/durum');
+      const mamul = stok.find(s => s.malzeme.startsWith('MAMUL:'));
+      if (!mamul) throw new Error('Mamul stok yok — önce Üretim sekmesinden lot tamamla');
+      await erpPost('/satis/siparis', {
+        musteri: m, urun: mamul.ad, miktar_ton: ton, birim_fiyat: fiyat });
+      await erpSekme('satis');
+    } catch (e) { document.getElementById('saMsj').textContent = e.message; }
+  };
+}
+
+// --- Sevkiyat
+async function erpSevkiyat(panel) {
+  const [sevkiyatlar, siparisler] = await Promise.all([
+    erpGet('/shipments'), erpGet('/salesOrders')]);
+  const bekleyen = siparisler.kayitlar.filter(s => s.durum === 'ACIK');
+  panel.innerHTML = `
+    <h4>Sevkiyat — iki kademeli onay</h4>
+    ${bekleyen.length ? `<div class="form-satir">
+      <select id="svSip">${bekleyen.map(s => `<option value="${s.id}">${s.id} · ${s.musteri} · ${s.miktarTon} ton</option>`).join('')}</select>
+      <button id="svHazir">Sevkiyat Hazırla</button></div>` :
+      '<div class="muted" style="font-size:12px;">Hazırlanacak açık sipariş yok.</div>'}
+    <div id="svMsg" class="test-msg"></div>
+    <table class="erp-tablo" style="margin-top:10px;">
+      <thead><tr><th>Sevkiyat</th><th>Müşteri</th><th>Ton</th><th>Tutar</th><th>1. Onay</th><th>2. Onay</th><th></th></tr></thead>
+      <tbody>${sevkiyatlar.kayitlar.slice(-8).reverse().map(s => `
+        <tr><td>${s.id}</td><td>${s.musteri}</td><td>${s.miktarTon}</td><td>${tl(s.tutar)}</td>
+          <td class="${s.onay1 ? 'ok' : ''}">${s.onay1 ? '✓' : '—'}</td>
+          <td class="${s.onay2 ? 'ok' : ''}">${s.onay2 ? '✓' : '—'}</td>
+          <td>${!s.onay1 ? `<button data-ov="${s.id}" style="padding:2px 8px;font-size:11px;">1. Onay</button>` :
+               (!s.onay2 ? `<button data-ov2="${s.id}" style="padding:2px 8px;font-size:11px;">2. Onay (Sevk)</button>` : '')}</td>
+        </tr>`).join('') || '<tr><td colspan="7" class="muted">henüz yok</td></tr>'}</tbody>
+    </table>
+    <div class="muted" style="font-size:11px;margin-top:8px;">
+      2. onay tek işlemde 8 kayıt üretir: stok çıkışı, fatura, fiş, cari, maliyet yansıması, bildirim, outbox, olay.
+    </div>`;
+
+  document.getElementById('svHazir')?.addEventListener('click', async () => {
+    try {
+      await erpPost('/sevkiyat/hazirla', { siparis_id: document.getElementById('svSip').value });
+      await erpSekme('sevkiyat');
+    } catch (e) { document.getElementById('svMsg').textContent = e.message; }
+  });
+  panel.querySelectorAll('[data-ov]').forEach(b => b.onclick = async () => {
+    try { await erpPost('/sevkiyat/onayla', { sevkiyat_id: b.dataset.ov }); await erpSekme('sevkiyat'); }
+    catch (e) { document.getElementById('svMsg').textContent = e.message; }
+  });
+  panel.querySelectorAll('[data-ov2]').forEach(b => b.onclick = async () => {
+    try {
+      const r = await erpPost('/sevkiyat/onayla', {
+        sevkiyat_id: b.dataset.ov2, client_id: 'UI-' + b.dataset.ov2 });
+      await erpSekme('sevkiyat');
+      await erpKpiCiz();
+      document.getElementById('svMsg').textContent = r.mesaj;
+      document.getElementById('svMsg').className = 'test-msg ok';
+    } catch (e) { document.getElementById('svMsg').textContent = e.message; }
+  });
+}
+
+// --- Muhasebe
+async function erpMuhasebe(panel) {
+  const m = await erpGet('/finans/mizan');
+  panel.innerHTML = `
+    <h4>Mizan — borç = alacak kontrolü</h4>
+    <div class="form-satir">
+      <span class="${m.denk ? 'ok' : 'no'}" style="font-size:12px;">
+        ${m.denk ? '✓ DENK' : '✗ DENK DEĞİL'} · borç ${tl(m.toplam_borc)} · alacak ${tl(m.toplam_alacak)}
+      </span>
+    </div>
+    <table class="erp-tablo">
+      <thead><tr><th>Hesap</th><th>Ad</th><th>Borç</th><th>Alacak</th><th>Bakiye</th><th>Taraf</th></tr></thead>
+      <tbody>${m.satirlar.map(s => `
+        <tr><td>${s.hesap}</td><td>${s.hesap_adi}</td><td>${tl(s.borc)}</td>
+          <td>${tl(s.alacak)}</td><td>${tl(s.bakiye)}</td>
+          <td class="${s.taraf === 'BORC' ? 'ok' : ''}">${s.taraf}</td></tr>`).join('')}</tbody>
+    </table>`;
+}
+
+// --- Stok
+async function erpStok(panel) {
+  const stok = await erpGet('/stok/durum');
+  panel.innerHTML = `
+    <h4>Stok Durumu</h4>
+    <table class="erp-tablo">
+      <thead><tr><th>Malzeme</th><th>Ad</th><th>Mevcut</th><th>Rezerve</th><th>Kritik eşik</th><th>Değer</th></tr></thead>
+      <tbody>${stok.map(s => `
+        <tr><td>${s.malzeme}</td><td>${s.ad}</td>
+          <td class="${s.kritik ? 'no' : ''}">${s.mevcut} ${s.birim}</td>
+          <td>${s.rezerve}</td><td>${s.kritikEsik}</td><td>${tl(s.stokDegeri)}</td></tr>`).join('')}</tbody>
+    </table>`;
+}
+
+// --- Hesap motoru
+async function erpHesap(panel) {
+  const sc = await erpGet('/hesap/self-check');
+  const kesim = await erpPost('/hesap/kesim', { kafa_adedi: 2, kesim_sayisi: 2 });
+  panel.innerHTML = `
+    <h4>Hesap Motorları — doküman §7.1 doğrulaması</h4>
+    <div class="${sc.uyumlu ? 'ok' : 'no'}" style="font-size:12px;margin-bottom:10px;">
+      ${sc.uyumlu ? '✓ Dokümandaki sayılar birebir üretiliyor' : '✗ Sapma var'}
+    </div>
+    <div class="erp-grid2">
+      <div>
+        <table class="erp-tablo">
+          <thead><tr><th>Ölçü</th><th>Hesaplanan</th><th>Doküman</th></tr></thead>
+          <tbody>
+            <tr><td>6300 mm döküm</td><td>${sc.dokum_6300_kg} kg</td><td>423,29 kg</td></tr>
+            <tr><td>6000 mm mamul</td><td>${sc.mamul_6000_kg} kg</td><td>403,13 kg</td></tr>
+            <tr><td>300 mm kafa</td><td>${sc.kafa_300_kg} kg</td><td>20,16 kg</td></tr>
+            <tr><td>3 mm talaş</td><td>${sc.talas_3_kg} kg</td><td>0,202 kg</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <table class="erp-tablo">
+          <thead><tr><th>Kesim raporu</th><th>Değer</th></tr></thead>
+          <tbody>
+            <tr><td>Döküm</td><td>${kesim.dokum_kg} kg</td></tr>
+            <tr><td>Kafa (${kesim.kafa_adedi}×)</td><td>${kesim.kafa_toplam_kg} kg</td></tr>
+            <tr><td>Talaş (${kesim.kesim_sayisi}×)</td><td>${kesim.talas_toplam_kg} kg</td></tr>
+            <tr><td>Fire oranı</td><td>%${kesim.fire_orani_yuzde}</td></tr>
+            <tr><td class="ok">Net biyet</td><td class="ok">${kesim.net_biyet_kg} kg</td></tr>
+            <tr><td>Gerçek kafa payı</td><td>${kesim.gercek_kafa_payi_mm} mm</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+// --- 35 ekran
+async function erpEkranlar(panel) {
+  const d = await erpGet('/ekranlar');
+  const gruplar = {};
+  d.ekranlar.forEach(e => (gruplar[e.grup] = gruplar[e.grup] || []).push(e));
+  panel.innerHTML = `
+    <h4>35 Ekran · ${d.dolu}/35 veriyle dolu</h4>
+    ${Object.entries(gruplar).map(([g, liste]) => `
+      <div style="margin-bottom:10px;">
+        <div class="muted" style="font-size:11px;margin-bottom:4px;">${g}</div>
+        <div class="ekran-liste">
+          ${liste.map(e => `<div class="${e.dolu ? '' : 'bos'}">${e.no}. ${e.ekran}
+            <span style="float:right;font-size:10px;">${e.kayit}</span></div>`).join('')}
+        </div>
+      </div>`).join('')}`;
+}
+
+// Sekme tıklamaları
+document.querySelectorAll('#erpTabs button').forEach(b => {
+  b.addEventListener('click', () => erpSekme(b.dataset.tab));
+});
+
+erpKpiCiz();
+erpSekme('satin');
+setInterval(erpKpiCiz, 6000);
 
 init();
 </script>

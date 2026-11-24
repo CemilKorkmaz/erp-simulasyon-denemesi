@@ -32,6 +32,10 @@ from simulator.furnace import FurnaceParams
 from simulator.plc_writer import PlcWriteController, KONTROL_SINYALLERI
 from simulator.faults import FaultInjector
 from erp_backend.database import Database
+from erp_backend.erp_routes import ERP as ERP_MODEL
+
+_ERP_SONRAKI = 0.0
+from erp_backend.erp_routes import router as erp_router
 
 # ------------------------------------------------------------------ ayarlar
 
@@ -195,6 +199,16 @@ async def simulation_loop() -> None:
         except Exception as exc:  # pragma: no cover - savunma amaçlı
             print("Veritabanı yazma hatası (canlı akış sürüyor):", exc)
 
+        # ERP modeline fırın sinyallerini işle (doküman §8/§11 köprü mantığı).
+        # 5 saniyede bir yeterli: her tikte yazmak dosyayı şişirirdi.
+        global _ERP_SONRAKI
+        if time.time() >= _ERP_SONRAKI:
+            _ERP_SONRAKI = time.time() + 5.0
+            try:
+                ERP_MODEL.plc_sinyal_guncelle(states)
+            except Exception as exc:  # pragma: no cover
+                print("ERP sinyal güncelleme hatası:", exc)
+
         await manager.broadcast({
             "type": "tick",
             "ts": time.time(),
@@ -220,6 +234,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ERP Fabrika Simülasyonu", lifespan=lifespan)
+app.include_router(erp_router)
 
 # Arayüz klasörü: normal çalışmada repo kökündeki "frontend",
 # paketlenmiş (exe) çalışmada _MEIPASS içindeki kopya.

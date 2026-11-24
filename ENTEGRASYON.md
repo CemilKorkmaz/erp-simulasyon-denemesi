@@ -259,6 +259,402 @@ Saniyede 4 kez `{"type":"tick","furnaces":{...},"orders":[...]}` yayınlar.
 
 ---
 
+
+---
+
+## 3b. ERP İŞ FONKSİYONLARI — 59 varlık, 35 ekran, 18 hesap motoru
+
+Yukarıdaki fırın uçları makine verisini verir. **Bu bölüm ise ERP'nin ticari
+zincirinin tamamıdır** — personel, satış, maliyet, kâr, stok, satın alma,
+muhasebe, bakım. Dokümanındaki her fonksiyonu burada sınayabilirsin.
+
+Temel adres: `http://localhost:8000/api/erp`
+
+### 3b.1 Ne var?
+
+| Ölçü | Sayı | Doğrulama |
+|------|------|-----------|
+| Varlık (koleksiyon) | **59** | `GET /api/erp/meta` |
+| Ekran | **35** | `GET /api/erp/ekranlar` |
+| Modül | **15** | `GET /api/erp/meta` |
+| Hesap motoru | **18** | `GET /api/erp/meta` |
+| Hesap planı | **12** (100–740) | `GET /api/erp/accounts` |
+
+Veri tek dosyada: `erp_sim_data.json`. Silersen demo verisi yeniden kurulur.
+Sıfırlamak için: `POST /api/erp/sistem/sifirla`
+
+### 3b.2 Tek çağrıda her şey
+
+```http
+GET /api/erp/durum
+```
+
+```json
+{
+  "kpi": {"ciro": 16000, "alacak": 384200, "borc": 27600,
+          "uretim_ton": 14, "fire_orani_yuzde": 2.86,
+          "stok_degeri": 147200, "sevkiyat_sayisi": 1, ...},
+  "varlik_sayisi": 59,
+  "varliklar": {"plants": 1, "machines": 8, "lots": 3, ...},
+  "ekranlar": [{"no": 1, "ekran": "Panel", "dolu": true}, ...],
+  "mizan": {"denk": true, "satirlar": [...]},
+  "bakim": [{"makineKod": "MCH-30", "yuzde": 82.4, "seviye": "yaklasiyor"}],
+  "stok": [{"malzeme": "MAT-0001", "mevcut": 30000, "kritik": false}]
+}
+```
+
+### 3b.3 Her varlığı okuma
+
+59 koleksiyonun her biri `GET /api/erp/{koleksiyon}` ile okunur:
+
+```bash
+curl http://localhost:8000/api/erp/materials
+curl http://localhost:8000/api/erp/customers
+curl http://localhost:8000/api/erp/journalEntries
+curl http://localhost:8000/api/erp/lots
+curl http://localhost:8000/api/erp/lots/LOT-0001      # tek kayıt
+```
+
+Geçerli koleksiyon adları `GET /api/erp/meta` → `varliklar` alanında listelenir.
+
+### 3b.4 Satın Alma zinciri (§6.1)
+
+Talep → teklif → teklif seçimi → emir → onay → mal kabul → fatura.
+
+```bash
+# 1) Talep aç
+curl -X POST http://localhost:8000/api/erp/satin-alma/talep \
+  -H 'Content-Type: application/json' \
+  -d '{"malzeme":"MAT-0001","miktar":5000,"gerekce":"Üretim ihtiyacı"}'
+# → {"id":"TLP-0001","durum":"ACIK",...}
+
+# 2) İki tedarikçiden teklif al
+curl -X POST .../satin-alma/teklif \
+  -d '{"talep_id":"TLP-0001","tedarikci":"SUP-0001","birim_fiyat":2.40}'
+curl -X POST .../satin-alma/teklif \
+  -d '{"talep_id":"TLP-0001","tedarikci":"SUP-0002","birim_fiyat":2.25}'
+
+# 3) Ucuz olanı seç → emir taslağı doğar
+curl -X POST .../satin-alma/teklif-sec -d '{"teklif_id":"TKF-0002"}'
+# → {"id":"SAE-0001","durum":"TASLAK","toplam":11250}
+
+# 4) Onayla (onaysız mal kabul REDDEDİLİR)
+curl -X POST .../satin-alma/onayla -d '{"emir_id":"SAE-0001"}'
+
+# 5) Mal kabul: brüt/fire/net ayrı
+curl -X POST .../satin-alma/mal-kabul \
+  -d '{"emir_id":"SAE-0001","brut":5200,"fire":200}'
+# → {"brut":5200,"fire":200,"net":5000,"fireOraniYuzde":3.85}
+
+# 6) Alış faturası → 150+191 borç, 320 alacak
+curl -X POST .../satin-alma/fatura -d '{"emir_id":"SAE-0001"}'
+# → {"fatura":{"net":11500,"kdv":2300,"genelToplam":13800},"fis":{"balanced":true}}
+```
+
+**Test etmen gereken hatalar:**
+
+| Durum | Beklenen |
+|-------|----------|
+| Olmayan malzeme | `400` "Malzeme bulunamadı" |
+| Negatif miktar | `400` "miktar pozitif olmalı" |
+| Onaysız emre mal kabul | `400` "emir TASLAK durumunda; önce onaylanmalı" |
+| Fire > brüt | `400` "fire 0 ile brüt arasında olmalı" |
+
+### 3b.5 Üretim zinciri (§6.2)
+
+Reçete → lot (döküm kodu) → 8 aşama → mamul stok + yan ürün + maliyet.
+
+```bash
+# Lot aç
+curl -X POST .../uretim/lot \
+  -d '{"recete_id":"RCP-0001","firin_makine":"MCH-01"}'
+# → {"id":"LOT-0001","kod":"LOT-261124-0001","asama":"Ergitme"}
+
+# Aşama ilerlet (7 kez: Ergitme→Döküm→...→Sevkiyat)
+for i in $(seq 7); do
+  curl -X POST .../uretim/asama -d '{"lot_id":"LOT-0001"}'
+done
+
+# Tamamla → mamul stoğa girer
+curl -X POST .../uretim/tamamla \
+  -d '{"lot_id":"LOT-0001","net_ton":14,"fire_ton":0.4}'
+
+# Maliyet (5 kalem: hammadde, enerji, sarf, işçilik, fire)
+curl -X POST .../uretim/maliyet \
+  -d '{"lot_id":"LOT-0001","enerji":3500,"sarf":800,"iscilik":2200}'
+# → {"toplam":53526,"ton_maliyet":3823.29,"kg_maliyet":3.8233}
+```
+
+**Aşama atlanamaz:** `Ergitme`den `Testere`ye atlarsan `400` alırsın.
+**Hedef tonaj aşımı:** 14 tonluk lota 20 ton → `400`.
+
+Homojenizasyon (§5/13):
+
+```bash
+curl -X POST .../uretim/homojenizasyon \
+  -d '{"lot_id":"LOT-0001","recete_id":"HRC-0001","hedef_sicaklik":560,"hedef_sure_dk":8}'
+curl -X POST .../uretim/homojenizasyon-tamamla \
+  -d '{"parti_id":"HOM-0001","gercek_sure_dk":9.5,"gercek_sicaklik":558}'
+# → "sure_kontrol": {"fark_dk": 1.5, "asildi": true, "sapma_yuzde": 18.75}
+```
+
+### 3b.6 Satış + Sevkiyat (§6.3)
+
+**Kredi kontrolü** sipariş anında yapılır:
+
+```bash
+curl -X POST .../satis/siparis \
+  -d '{"musteri":"CUS-0003","urun":"6063 Alüminyum Biyet","miktar_ton":8,"birim_fiyat":3500}'
+# CUS-0003: limit 150.000, bakiye 142.000 → 28.000 TL yeni → REDDEDİLİR
+# → 400 "kredi limiti aşılıyor: limit 150000, mevcut 142000, yeni 28000 → aşılan 20000 TL"
+```
+
+**İki kademeli sevkiyat — tek işlem 8 kayıt:**
+
+```bash
+curl -X POST .../sevkiyat/hazirla -d '{"siparis_id":"SSP-0001"}'
+# → {"id":"SVK-0001","durum":"HAZIRLANIYOR"}
+
+# 1. onay — sadece hazırlık
+curl -X POST .../sevkiyat/onayla -d '{"sevkiyat_id":"SVK-0001"}'
+# → {"asama":1,"mesaj":"1. onay alındı; fiili çıkış için 2. onay gerekli"}
+
+# 2. onay — fiili çıkış, 8 kayıt
+curl -X POST .../sevkiyat/onayla \
+  -d '{"sevkiyat_id":"SVK-0001","plaka":"34 TEST 01","client_id":"SEVK-001"}'
+```
+
+```json
+{
+  "asama": 2,
+  "kayit_sayisi": 8,
+  "uretilen": {
+    "stok_cikis": true,
+    "fatura": "FTR-0001",
+    "fis": "FIS-0001",
+    "cari_bakiye": 129800.0,
+    "kost_yansimasi": 19116.45,
+    "karlilik": {"gelir": 16000, "maliyet": 19116.45,
+                 "brut_kar": -3116.45, "marj_yuzde": -19.48},
+    "bildirim": true,
+    "outbox": true,
+    "olay": true
+  }
+}
+```
+
+**Idempotency — en kritik test:** Aynı `client_id` ile tekrar gönder:
+
+```bash
+curl -X POST .../sevkiyat/onayla \
+  -d '{"sevkiyat_id":"SVK-0001","client_id":"SEVK-001"}'
+# → {"tekrar": true, "mesaj": "Bu onay zaten işlenmiş (idempotent)"}
+```
+
+Yeni fatura oluşmaz, stok ikinci kez düşmez. Bunu ERP'nde **mutlaka** test et:
+ağ tekrar denemesi yaptığında çift fatura kesilmemeli.
+
+### 3b.7 Muhasebe (§7.3)
+
+```bash
+curl http://localhost:8000/api/erp/finans/mizan
+```
+
+```json
+{
+  "denk": true,
+  "toplam_borc": 46800.0,
+  "toplam_alacak": 46800.0,
+  "satirlar": [
+    {"hesap": "120", "hesap_adi": "Alıcılar", "borc": 19200, "alacak": 0, "taraf": "BORC"},
+    {"hesap": "600", "hesap_adi": "Yurt İçi Satışlar", "borc": 0, "alacak": 16000, "taraf": "ALACAK"},
+    {"hesap": "391", "hesap_adi": "Hesaplanan KDV", "borc": 0, "alacak": 3200, "taraf": "ALACAK"}
+  ]
+}
+```
+
+**Dönem kapanışı mizan kontrolü yapar:**
+
+```bash
+curl -X POST .../finans/donem-kapat -d '{"donem":"2026-11","onay":false}'
+# → 400 "dönem kapanışı onay gerektirir (onay=true)"
+
+curl -X POST .../finans/donem-kapat -d '{"donem":"2026-11","onay":true}'
+# → {"id":"DKN-0001","mizanDenk":true,"butceSapma":...}
+```
+
+**Tahsilat/ödeme** bakiye kontrolü yapar:
+
+```bash
+curl -X POST .../finans/odeme \
+  -d '{"tip":"TAHSILAT","taraf":"CUS-0002","tutar":1000}'
+# bakiye 97.000 → 96.000
+
+curl -X POST .../finans/odeme \
+  -d '{"tip":"TAHSILAT","taraf":"CUS-0002","tutar":999999}'
+# → 400 "tahsilat bakiye üstünde: bakiye 96000.00, tahsilat 999999.00"
+```
+
+### 3b.8 Stok, sayım, kırıcı (§6.4)
+
+```bash
+curl http://localhost:8000/api/erp/stok/durum
+# her malzeme: mevcut, rezerve, kritik eşik, stok değeri
+
+# Sayım — fark varsa düzeltme hareketi + fiş üretir
+curl -X POST .../stok/sayim -d '{"malzeme":"MAT-0003","sayilan":388}'
+# → {"sistemMiktar":400,"sayilanMiktar":388,"fark":-12,"durum":"FARK_VAR"}
+
+# Kırıcı — 4 kader: TEKRAR_FIRIN / DONGUSEL / SATIS / ATIK
+curl -X POST .../stok/kirici \
+  -d '{"lot_id":"LOT-0001","miktar_ton":0.5,"kader":"TEKRAR_FIRIN"}'
+```
+
+### 3b.9 Personel, bakım, KPI
+
+```bash
+# Personel & vardiya (bordro kapsam dışı)
+curl http://localhost:8000/api/erp/personel/vardiya
+curl -X POST .../personel -d '{"ad":"Ali Veli","rol":"Operatör","vardiya":"16:00-00:00"}'
+
+# Bakım — yağ/bıçak ömrü, eşik, sayaç sıfırlama
+curl http://localhost:8000/api/erp/bakim/durum
+# → [{"makineKod":"MCH-30","kaynak":"yağ","yuzde":82.4,
+#     "seviye":"yaklasiyor","bakim_gerekli":false}]
+curl -X POST .../bakim/kaydet \
+  -d '{"makine_kod":"MCH-30","tip":"bıçak değişimi","notu":"Periyodik"}'
+# → sayaç 0'a döner
+
+# KPI — §13'teki tüm göstergeler
+curl http://localhost:8000/api/erp/kpi
+```
+
+### 3b.10 Hesap motorları (§7.1–7.4)
+
+Dokümanındaki 18 saf fonksiyon. **Dokümanda yazan sayıları birebir üretir:**
+
+```bash
+curl http://localhost:8000/api/erp/hesap/self-check
+```
+
+```json
+{
+  "dokum_6300_kg": 423.29,   "dokuman_bekliyor": 423.29,
+  "mamul_6000_kg": 403.13,   "dokuman_bekliyor": 403.13,
+  "kafa_300_kg": 20.16,      "dokuman_bekliyor": 20.16,
+  "talas_3_kg": 0.202,       "dokuman_bekliyor": 0.202,
+  "uyumlu": true
+}
+```
+
+Diğer motorlar:
+
+```bash
+# Kesim raporu (kafa, talaş, fire, net biyet, geometri kontrolü)
+curl -X POST .../hesap/kesim \
+  -d '{"kafa_adedi":2,"kesim_sayisi":2,"tonaj_kg":420}'
+# → "geometry_check": {"fark_yuzde": 9.8, "uygun": false}
+
+# Kredi kontrolü
+curl -X POST .../hesap/kredi -d '{"limit":50000,"kullanilan":30000,"yeni_tutar":25000}'
+# → {"onay":false,"asilan":5000}
+
+# Döküm kodu maliyeti
+curl -X POST .../hesap/maliyet \
+  -d '{"hammadde":12000,"enerji":3500,"sarf":800,"iscilik":2200,"fire":1500,"net_ton":14}'
+# → {"toplam":20000,"ton_maliyet":1428.57,"kalem_paylari":{...}}
+
+# Bir belgeden doğacak kayıtlar (§6.3 tablosu)
+curl -X POST .../hesap/posting-effects -d '{"belge_tipi":"sevkiyat","tutar":10000}'
+# → {"kayit_sayisi":8,"uretilen_kayitlar":[...],"fis_dengeli":true}
+```
+
+### 3b.11 Fırın simülasyonu ↔ ERP bağlantısı
+
+Fırın sinyalleri **otomatik olarak** ERP modeline akar (doküman §8/§11):
+
+```bash
+curl http://localhost:8000/api/erp/signalStates
+```
+
+```json
+[{"firin": "Aluminyum Eritme Fırını", "door": null, "casting": false,
+  "alarm": false, "running": true, "sicaklik": 723.4, "hedef": 750,
+  "kalite": "SIMULATED", "ts": 1795522775}]
+```
+
+- **5 saniyede bir** güncellenir (her tikte yazmak dosyayı şişirirdi)
+- `door: null` → simülasyonda kapı sensörü yok (doküman §15.1/6: `unknown`)
+- `kalite: "SIMULATED"` → gerçek ölçüm gibi raporlanmaz (doküman §8.2)
+- Telemetri ayrı koleksiyonda: `GET /api/erp/telemetry`
+
+### 3b.12 Arayüzdeki ERP paneli
+
+Arayüzün altında **🏢 ERP İş Zinciri** var. 8 sekme:
+
+| Sekme | Ne yapar |
+|-------|----------|
+| **Satın Alma** | Talep aç (otomatik teklif+seçim), emri onayla, mal kabul + fatura |
+| **Üretim** | Lot aç, 8 aşamayı tek tek ilerlet, tamamla, maliyet |
+| **Satış** | Kredi kontrollü sipariş, kâr hesabı |
+| **Sevkiyat** | Hazırla → 1. onay → 2. onay (8 kayıt) |
+| **Muhasebe** | Canlı mizan, denklik kontrolü |
+| **Stok** | Mevcut/rezerve/kritik/değer |
+| **Hesap Motoru** | Doküman §7.1 doğrulaması yan yana |
+| **35 Ekran** | Hangi ekran dolu, kaç kayıt |
+
+Üstte 8 KPI kartı canlı güncellenir (ciro, alacak, borç, üretim, fire,
+stok değeri, açık sipariş, sevkiyat).
+
+### 3b.13 Otomatik test — 150 test
+
+```bash
+# 1. terminal
+ERP_PLC_WRITE=1 SIM_SPEED=25 python3 -m erp_backend.main
+
+# 2. terminal
+python3 tools/erp_test.py
+```
+
+```
+================================================================
+  SONUÇ: 150/150 test geçti
+  ✓ ERP'nin her fonksiyonu test edildi.
+================================================================
+```
+
+16 grup: meta, hesap motorları, tanımlar, satın alma, üretim,
+homojenizasyon, stok/sayım, satış, sevkiyat, muhasebe, bakım, personel,
+KPI, olay/kuyruk, idempotency, 35 ekran doluluk.
+
+Fırın testleri ayrı: `python3 tools/system_test.py` (53 test).
+
+### 3b.14 Senin ERP'nde neyi test etmelisin
+
+| # | Senaryo | Uç | ERP'nde kontrol |
+|---|---------|-----|-----------------|
+| 1 | Talep → emir zinciri | `/satin-alma/*` | Onay izi kaydediliyor mu |
+| 2 | Onaysız mal kabul | `400` | Hata gösteriliyor mu (yutulmuyor mu) |
+| 3 | Fire > brüt | `400` | Doğrulama çalışıyor mu |
+| 4 | Aşama atlama | `400` | Pano sıra kontrolü |
+| 5 | Hedef tonaj aşımı | `400` | Tonaj uyarısı |
+| 6 | **Kredi limiti aşımı** | `400` | Sipariş reddi kullanıcıya gösteriliyor mu |
+| 7 | **Yetersiz stok** | `400` | Rezervasyon engeli |
+| 8 | **Idempotency** | `tekrar:true` | Çift fatura kesilmiyor mu |
+| 9 | Mizan denkliği | `denk:true` | Fiş dengesi raporlanıyor mu |
+| 10 | Onaysız dönem kapanışı | `400` | Onay akışı |
+| 11 | Bakiye üstü tahsilat | `400` | Cari kontrol |
+| 12 | Sayım farkı | `fark` | Düzeltme + fiş üretiliyor mu |
+| 13 | Bakım sayacı sıfırlama | `yuzde:0` | Sayaç güncelleniyor mu |
+| 14 | Personel vardiya | `vardiyalar` | Gruplama doğru mu |
+| 15 | **35 ekran dolu** | `/ekranlar` | Her ekran veri gösteriyor mu |
+| 16 | **Kalite etiketi** | `SIMULATED` | Simülasyon verisi ayrı işaretli mi |
+
+**En kritik 4 tanesi:** 2, 6, 8, 16. Bunlar sessizce yutulursa gerçek
+fabrikada mali kayba yol açar.
+
+---
+
 ## 4. ERP'ne ekleyeceğin istemci kodu (örnek)
 
 Bu bir "simülasyon adaptörü" — kendi kod tabanına kopyalayabilirsin.

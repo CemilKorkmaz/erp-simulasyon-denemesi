@@ -26,6 +26,43 @@ Simüle edilen fırınlar (rehberdeki ekipmanlarla birebir):
 2. **Homojenizasyon Fırını** — iç/bölgesel sıcaklık modeli, ısıtma-bekletme çevrimi, reçete/parametre
 3. **Biyet Isıtma Fırını** — biyet sıcaklığı, ısıtma süresi, ürün adedi, üretim durumu
 
+## ERP'nin tamamını test et
+
+Sadece fırın değil — **dokümanındaki her ERP fonksiyonu** bu simülasyonda
+sınanabilir. Ayrıntı: **[ENTEGRASYON.md §3b](ENTEGRASYON.md)**
+
+| Katman | Sayı | Örnek uç |
+|--------|------|----------|
+| Varlık (koleksiyon) | **59** | `/api/erp/materials`, `/api/erp/lots` |
+| Ekran | **35** | `/api/erp/ekranlar` |
+| Modül | **15** | `/api/erp/meta` |
+| Hesap motoru | **18** | `/api/erp/hesap/self-check` |
+
+### İş zincirleri
+
+| Zincir | Adımlar |
+|--------|---------|
+| **Satın Alma** | talep → teklif → teklif seç → emir → onay → mal kabul → fatura |
+| **Üretim** | reçete → lot → 8 aşama → mamul stok + yan ürün + maliyet |
+| **Satış** | kredi kontrolü → sipariş → rezervasyon |
+| **Sevkiyat** | hazırla → 1. onay → 2. onay (**8 kayıt tek işlemde**) |
+| **Muhasebe** | fiş → mizan → dönem kapanışı → tahsilat/ödeme |
+| **Stok** | sayım farkı → düzeltme + fiş, kırıcı (4 kader) |
+
+### Arayüzde ERP paneli
+
+Arayüzün altında **🏢 ERP İş Zinciri** — 8 sekme, 8 canlı KPI kartı.
+Kod yazmadan tüm zinciri tıklayarak deneyebilirsin.
+
+### Test
+
+```bash
+python3 tools/erp_test.py     # 150 test / 16 grup — ERP fonksiyonları
+python3 tools/system_test.py  #  53 test / 14 grup — fırın + PLC
+```
+
+---
+
 ## Test modu: ERP'nin bütün zincirini dene
 
 Bu simülasyon artık **salt izleme** değil — ERP'ndeki her davranışı
