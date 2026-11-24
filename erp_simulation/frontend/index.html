@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fabrika Simülasyonu - ERP Panosu</title>
+<style>
+  body{font-family:system-ui,Segoe UI,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:20px}
+  header{display:flex;align-items:center;gap:12px;margin-bottom:20px}
+  .dot{width:10px;height:10px;border-radius:50%;background:#ef4444}
+  .dot.online{background:#22c55e;box-shadow:0 0 8px #22c55e}
+  table{width:100%;border-collapse:collapse;background:#1e293b;border:1px solid #334155;border-radius:10px}
+  th,td{padding:10px;border-bottom:1px solid #2d3a52;text-align:left;font-size:14px}
+  th{background:#0f172a;color:#94a3b8}
+  .badge{padding:2px 8px;border-radius:10px;font-size:11px;text-transform:uppercase}
+  .ok{background:#166534;color:#bbf7d0}
+  .off{background:#475569;color:#cbd5e1}
+  .alarm{background:#7f1d1d;color:#fecaca;animation:blink 1.2s infinite}
+  @keyframes blink{50%{opacity:.6}}
+  input,select{width:100%;background:#0b1120;border:1px solid #475569;color:#e2e8f0;padding:8px 10px;border-radius:8px;font-size:13px}
+  button{background:#2563eb;color:#fff;border:none;padding:8px 14px;border-radius:8px;cursor:pointer;font-weight:600}
+  button:hover{background:#3b82f6}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
+  .muted{color:#64748b;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <div class="dot" id="wsDot"></div>
+  <strong>Fabrika Simülasyonu - ERP Panosu</strong>
+  <span class="muted" id="wsStatus">Bağlanıyor…</span>
+</header>
+
+<h2>Fırınlar</h2>
+<table id="furnaces">
+  <thead><tr><th>Fırın</th><th>Tür</th><th>Sıcaklık</th><th>Hedef</th><th>Durum</th><th>Brülör</th><th>Gaz</th><th>Evrim</th><th>Alarm</th></tr></thead>
+  <tbody></tbody>
+</table>
+
+<h2 style="margin-top:30px">Üretim Emri Oluştur</h2>
+<div class="grid2">
+  <input id="inpProduct" placeholder="Ürün (ör. Alüminyum Profili)">
+  <input id="inpTarget" type="number" placeholder="Hedef °C" value="750">
+</div>
+<div class="grid2">
+  <select id="inpFurnace"></select>
+  <input id="inpDuration" type="number" placeholder="Süre (dk)" value="30">
+</div>
+<button id="btnCreate">Sipariş Oluştur</button>
+<button id="btnStart" style="margin-left:8px">Seçili Fırına Başlat</button>
+<p class="muted">Sipariş oluşturduktan sonra fırını seçip "Başlat" ile çevrimi başlatabilirsin.</p>
+
+<h2 style="margin-top:30px">Emirler</h2>
+<table id="orders">
+  <thead><tr><th>Emir No</th><th>Ürün</th><th>Fırın</th><th>Durum</th><th>İşlem</th></tr></thead>
+  <tbody></tbody>
+</table>
+
+<script>
+const WS_URL = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/api/ws';
+const wsDot = document.getElementById('wsDot');
+const wsStatus = document.getElementById('wsStatus');
+const furnaceTbody = document.querySelector('#furnaces tbody');
+const orderTbody = document.querySelector('#orders tbody');
+const inpFurnace = document.getElementById('inpFurnace');
+
+async function load(){
+  const [fResp, oResp] = await Promise.all([
+    fetch('/api/furnaces'), fetch('/api/orders')
+  ]);
+  const furnaces = await fResp.json();
+  const orders = await oResp.json();
+
+  furnaceTbody.innerHTML = '';
+  inpFurnace.innerHTML = '';
+  for (const [name, s] of Object.entries(furnaces)){
+    const tr = document.createElement('tr');
+    const alarmClass = s.alarm ? 'alarm' : (s.status_kodu === 'OFF' ? 'off' : 'ok');
+    tr.innerHTML = `
+      <td><b>${name}</b></td>
+      <td>${s.type}</td>
+      <td>${s.temperature} °C</td>
+      <td>${s.target_temperature} °C</td>
+      <td><span class="badge ${alarmClass}">${s.status}</span></td>
+      <td>${s.burner_on ? 'AÇIK 🔥' : 'KAPALI'}</td>
+      <td>${s.gas_consumption} m³/h</td>
+      <td>${s.cycle_time} sn</td>
+      <td>${s.alarm || '—'}</td>
+    `;
+    furnaceTbody.appendChild(tr);
+
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    inpFurnace.appendChild(opt);
+  }
+
+  orderTbody.innerHTML = '';
+  for (const o of orders){
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${o.id}</td>
+      <td>${o.product}</td>
+      <td>${o.furnace}</td>
+      <td><span class="badge ${o.state}">${o.state}</span></td>
+      <td>${o.state === 'CREATED' ? '<button onclick="startOrder(\''+o.id+'\')">Başlat</button>' : '—'}</td>
+    `;
+    orderTbody.appendChild(tr);
+  }
+}
+
+async function startOrder(orderId){
+  const furnace = inpFurnace.value;
+  if(!furnace){ alert('Fırın seçin'); return; }
+  await fetch('/api/orders/'+encodeURIComponent(orderId)+'/start', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({furnace})
+  });
+  load();
+}
+
+document.getElementById('btnCreate').addEventListener('click', async ()=>{
+  const product = document.getElementById('inpProduct').value.trim();
+  const furnace = inpFurnace.value;
+  const target = parseFloat(document.getElementById('inpTarget').value);
+  const duration = parseFloat(document.getElementById('inpDuration').value);
+  if(!product || !furnace || !target || !duration){ alert('Tüm alanları doldur'); return; }
+  await fetch('/api/orders', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({product, furnace, target_temp:target, duration_min:duration})
+  });
+  document.getElementById('inpProduct').value = '';
+  load();
+});
+
+const ws = new WebSocket(WS_URL);
+ws.onopen = ()=>{ wsDot.className='dot online'; wsStatus.textContent='Canlı veri aktif'; };
+ws.onclose = ()=>{ wsDot.className='dot'; wsStatus.textContent='Bağlantı koptu'; setTimeout(()=>location.reload(), 3000); };
+ws.onmessage = (e)=>{
+  const msg = JSON.parse(e.data);
+  if(msg.type === 'tick'){ load(); }
+};
+
+setInterval(load, 2000);
+load();
+</script>
+</body>
+</html>

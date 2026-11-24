@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fabrika Yerel ERP</title>
+<style>
+  body{font-family:system-ui,Segoe UI,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:20px}
+  header{display:flex;align-items:center;gap:12px;margin-bottom:20px}
+  .dot{width:10px;height:10px;border-radius:50%;background:#ef4444}
+  .dot.online{background:#22c55e;box-shadow:0 0 8px #22c55e}
+  table{width:100%;border-collapse:collapse;background:#1e293b;border:1px solid #334155;border-radius:10px}
+  th,td{padding:10px;border-bottom:1px solid #2d3a52;text-align:left;font-size:14px}
+  th{background:#0f172a;color:#94a3b8}
+  .badge{padding:2px 8px;border-radius:10px;font-size:11px;text-transform:uppercase}
+  .ok{background:#166534;color:#bbf7d0}
+  .off{background:#475569;color:#cbd5e1}
+  .tag{font-family:ui-monospace,SFMono-Regular;color:#38bdf8}
+  button{background:#2563eb;color:#fff;border:none;padding:8px 14px;border-radius:8px;cursor:pointer}
+  button:hover{background:#3b82f6}
+  .muted{color:#64748b;font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <div class="dot" id="plcDot"></div>
+  <strong>Fabrika Yerel ERP</strong>
+  <span class="muted" id="plcStatus">PLC taranıyor…</span>
+</header>
+
+<h2>Makineler</h2>
+<table id="machines">
+  <thead><tr><th>Makine</th><th>PLC IP</th><th>Protokol</th><th>Durum</th><th>Son Güncelleme</th></tr></thead>
+  <tbody></tbody>
+</table>
+
+<h2 style="margin-top:30px">Canlı Sensor Verileri</h2>
+<table id="readings">
+  <thead><tr><th>Makine</th><th>Etiket</th><th>Değer</th><th>Birim</th><th>Zaman</th></tr></thead>
+  <tbody></tbody>
+</table>
+
+<p class="muted" style="margin-top:20px">Bu sayfa sadece fabrika içi yerel ağda çalışır. İnternete gerek yok.</p>
+
+<script>
+const BASE = "";
+async function load(){
+  try {
+    const machinesResp = await fetch(BASE+"/api/machines");
+    const machines = await machinesResp.json();
+    const mtbody = document.querySelector("#machines tbody");
+    mtbody.innerHTML = "";
+    for (const m of machines){
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${m.name}</td>
+        <td>${m.plc_ip || "—"}</td>
+        <td>${m.protocol || "—"}</td>
+        <td><span class="badge ${m.status==='OK'?'ok':'off'}">${m.status}</span></td>
+        <td>${m.last_seen ? new Date(m.last_seen*1000).toLocaleTimeString('tr-TR') : "—"}</td>
+      `;
+      mtbody.appendChild(tr);
+    }
+
+    const mid = machines.length ? machines[0].id : "PLC-192-168-1-10";
+    const readingsResp = await fetch(BASE+"/api/readings/"+mid+"?limit=20");
+    const readings = await readingsResp.json();
+    const rtbody = document.querySelector("#readings tbody");
+    rtbody.innerHTML = "";
+    for (const r of readings){
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${r.machine_id}</td>
+        <td class="tag">${r.tag_name}</td>
+        <td>${r.value !== null && r.value !== undefined ? r.value.toFixed(2) : "—"}</td>
+        <td>${r.unit}</td>
+        <td>${new Date(r.ts*1000).toLocaleTimeString('tr-TR')}</td>
+      `;
+      rtbody.appendChild(tr);
+    }
+
+    document.getElementById("plcStatus").textContent = machines.length ? `${machines.length} makine bulundu` : "PLC bulunamadı";
+    document.getElementById("plcDot").className = machines.length ? "dot online" : "dot";
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+setInterval(load, 3000);
+load();
+</script>
+</body>
+</html>
