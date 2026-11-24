@@ -166,6 +166,7 @@ class ErpModel:
             "createdAt": time.time(),
         }]
         self._sayaclar: dict[str, int] = {}
+        self._seed_modu = False
         self._yukle()
 
     # ------------------------------------------------------------ depolama
@@ -235,7 +236,9 @@ class ErpModel:
             self.data[koleksiyon].append(kayit)
             # Kalıcılık: her yazma diske iner. Prototip ölçeğinde yeterli;
             # gerçek ERP'de burada transaction commit olur.
-            self._kaydet()
+            # Seed sırasında tek tek yazmıyoruz (yüzlerce kayıt yavaşlatırdı).
+            if not self._seed_modu:
+                self._kaydet()
             return kayit
 
     def _bul(self, koleksiyon: str, kid: str) -> Optional[dict]:
@@ -434,8 +437,13 @@ class ErpModel:
         })
 
         # Yağ/bıçak kuralları (§5 ekran 18)
+        # İki makinede sayaç: MCH-30 demo bakımda sıfırlanır, MCH-01 eşikte kalır
+        # (arayüzde "yaklaşan bakım" uyarısı her zaman görünsün).
         self.data["oilRules"].append({"id": "OIL-0001", "makineKod": "MCH-30",
                                       "limitSaat": 500.0, "kullanilanSaat": 412.0,
+                                      "plantId": p})
+        self.data["oilRules"].append({"id": "OIL-0002", "makineKod": "MCH-01",
+                                      "limitSaat": 600.0, "kullanilanSaat": 528.0,
                                       "plantId": p})
         self.data["bladeRules"].append({"id": "BLD-0001", "makineKod": "MCH-30",
                                         "limitKesim": 2000, "kullanilanKesim": 1680,
@@ -517,6 +525,79 @@ class ErpModel:
         self._hareket("MAT-0004", "GIRIS", 24.0, "AD", "DEP-0001", "ACILIS")
 
         self._bildir("Sistem hazır", "Simülasyon ERP test ortamı başlatıldı.", "bilgi")
+
+        # Arayüz ilk açıldığında 35 ekranın hepsi dolu görünsün: örnek bir
+        # uçtan uca iş zinciri çalıştır (tümü demo verisi, plantId PLANT-1).
+        self._ornek_zincir()
+
+    def _ornek_zincir(self) -> None:
+        """Demo: satın alma → üretim → satış → sevkiyat → muhasebe → bakım.
+
+        `_seed()` sonunda bir kez çalışır. Hata olursa sessizce geçilir;
+        demo verisi eksik kalır ama sunucu açılır.
+        """
+        try:
+            self._seed_modu = True
+
+            # --- §6.1 satın alma
+            talep = self.talep_olustur("MAT-0001", 12000, "Aylık hurda alımı")
+            teklif1 = self.teklif_ver(talep["id"], "SUP-0001", 2.32)
+            teklif2 = self.teklif_ver(talep["id"], "SUP-0002", 2.28)
+            emir = self.teklif_sec(teklif2["id"])
+            self.satin_alma_onayla(emir["id"])
+            self.mal_kabul(emir["id"], brut=12200, fire=200)
+            self.alis_faturasi(emir["id"])
+
+            # --- §6.2 üretim (2 lot)
+            for fire, enerji in ((0.4, 3500), (0.35, 3200)):
+                lot = self.lot_ac("RCP-0001", "MCH-01")
+                for _ in range(7):
+                    self.asama_ilerlet(lot["id"])
+                self.lot_tamamla(lot["id"], net_ton=14.0, fire_ton=fire)
+                self.lot_maliyet(lot["id"], enerji=enerji, sarf=800, iscilik=2200)
+
+            # --- homojenizasyon partisi (§5/13)
+            lot2 = [l for l in self.data["lots"] if l["durum"] == "TAMAMLANDI"][-1]
+            parti = self.homojenizasyon_plani(lot2["id"], "HRC-0001", 560, 8)
+            self.homojenizasyon_tamamla(parti["id"], 8.6, 559)
+
+            # --- §6.4 sayım + kırıcı
+            self.sayim_yap("MAT-0003", 396)
+            self.kirici_kaydet(lot2["id"], 0.35, "TEKRAR_FIRIN")
+
+            # --- §6.3 satış + iki onaylı sevkiyat (2 sevkiyat)
+            for musteri, ton, fiyat in (("CUS-0001", 5.0, 3400),
+                                        ("CUS-0002", 3.0, 3500)):
+                sip = self.satis_siparisi(musteri, "6063 Alüminyum Biyet",
+                                          ton, fiyat)
+                sev = self.sevkiyat_hazirla(sip["id"])
+                self.sevkiyat_onayla(sev["id"], plaka="34 ALB 01")
+                self.sevkiyat_onayla(sev["id"],
+                                     client_id=f"SEED-{sev['id']}")
+
+            # --- satış teklifi (bekleyen)
+            self.teklif_hazirla("CUS-0003", "6063 Alüminyum Biyet", 2.0, 3600)
+
+            # --- §7.3 muhasebe: tahsilat + dönem kapanışı
+            self.odeme_kaydet("TAHSILAT", "CUS-0001", 50000)
+            self.donem_kapat(time.strftime("%Y-%m"), onay=True)
+
+            # --- §5/18 bakım
+            self.bakim_kaydet("MCH-30", "bıçak değişimi", "Periyodik bakım",
+                              kesim=1680)
+
+            # --- ek personel
+            self._ekle("users", {"ad": "Zeynep Arslan", "rol": "Kalite",
+                                 "vardiya": "16:00-00:00", "aktif": True,
+                                 "bordroKapsam": False})
+
+            self._bildir("Demo verisi hazır",
+                         "Örnek satın alma, üretim, satış ve sevkiyat "
+                         "zinciri yüklendi.", "basari")
+        except Exception as exc:  # pragma: no cover - demo verisi
+            print("Örnek zincir kurulamadı:", exc)
+        finally:
+            self._seed_modu = False
 
     # ------------------------------------------------------------ §6.1 satın alma
 

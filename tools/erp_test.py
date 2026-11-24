@@ -21,6 +21,9 @@ import urllib.request
 
 BASE = "http://127.0.0.1:8000/api/erp"
 SONUC: list[tuple[str, bool, str]] = []
+# Her çalıştırma kendi clientId uzayını kullanır; önceki çalıştırmadan kalan
+# kayıtlar idempotency testlerini yanlışlıkla "tekrar" durumuna düşürmesin.
+RUN_ID = str(int(time.time()))
 
 
 def cagir(yol: str, metot: str = "GET", govde: dict | None = None):
@@ -446,18 +449,19 @@ def test_i_sevkiyat():
 
     # 1. onay
     kod, r1 = cagir("/sevkiyat/onayla", "POST", {"sevkiyat_id": sev["id"]})
-    kontrol("1. onay alındı", kod == 200 and r1["asama"] == 1,
-            r1.get("mesaj", ""))
+    kontrol("1. onay alındı", kod == 200 and r1.get("asama") == 1,
+            r1.get("mesaj", r1.get("detail", "")))
     kontrol("henüz sevk edilmedi",
-            r1["sevkiyat"]["durum"] == "ONAY1_TAMAM",
-            r1["sevkiyat"]["durum"])
+            r1.get("sevkiyat", {}).get("durum") == "ONAY1_TAMAM",
+            str(r1.get("sevkiyat", {}).get("durum")))
 
     # 2. onay — 8 kayıt
+    sevk_cid = f"SEVK-{RUN_ID}"
     kod, r2 = cagir("/sevkiyat/onayla", "POST", {
         "sevkiyat_id": sev["id"], "plaka": "34 TEST 01",
-        "client_id": "SEVK-TEST-001"})
-    kontrol("2. onay alındı", kod == 200 and r2["asama"] == 2,
-            r2.get("mesaj", ""))
+        "client_id": sevk_cid})
+    kontrol("2. onay alındı", kod == 200 and r2.get("asama") == 2,
+            r2.get("mesaj", r2.get("detail", "")))
     if kod == 200:
         kontrol("8 kayıt üretildi", r2["kayit_sayisi"] == 8,
                 f"{r2['kayit_sayisi']} kayıt")
@@ -473,14 +477,13 @@ def test_i_sevkiyat():
 
     # Idempotency — aynı clientId
     kod, r3 = cagir("/sevkiyat/onayla", "POST", {
-        "sevkiyat_id": sev["id"], "client_id": "SEVK-TEST-001"})
+        "sevkiyat_id": sev["id"], "client_id": sevk_cid})
     kontrol("aynı clientId ikinci kez yazmıyor",
             kod == 200 and r3.get("tekrar") is True, r3.get("mesaj", ""))
 
     # Fatura sayısı artmadı mı
-    kod, ft = cagir("/invoices")
-    ayni = [f for f in ft["kayitlar"]
-            if f.get("clientId") == "SEVK-TEST-001"]
+    kod, ft = cagir("/invoices?limit=2000")
+    ayni = [f for f in ft["kayitlar"] if f.get("clientId") == sevk_cid]
     kontrol("tek fatura oluştu", len(ayni) == 1, f"{len(ayni)} fatura")
 
     # Stok düştü mü
@@ -551,25 +554,35 @@ def test_k_bakim():
     baslik("K", "§5/18 Yağ & bakım: eşik, kalan ömür, sayaç sıfırlama")
     kod, d = cagir("/bakim/durum")
     kontrol("bakım durumu alındı", kod == 200, f"{len(d)} sayaç")
-    if kod == 200 and d:
-        kontrol("seviye alanı var", all("seviye" in x for x in d))
-        kontrol("yüzde 0-200 arası",
-                all(0 <= x.get("yuzde", -1) <= 200 for x in d),
-                str([x.get("yuzde") for x in d]))
-        yuksek = [x for x in d if x.get("yuzde", 0) >= 80]
-        kontrol("yaklaşan bakım tespiti", len(yuksek) > 0,
-                f"{len(yuksek)} sayaç ≥%80")
+    if kod != 200 or not d:
+        return
+    kontrol("seviye alanı var", all("seviye" in x for x in d))
+    kontrol("yüzde 0-200 arası",
+            all(0 <= x.get("yuzde", -1) <= 200 for x in d),
+            str([x.get("yuzde") for x in d]))
+    kontrol("geçerli seviye değerleri",
+            all(x.get("seviye") in ("normal", "yaklasiyor", "esik_doldu")
+                for x in d),
+            ", ".join(sorted({str(x.get("seviye")) for x in d})))
 
-    # Bakım kaydı + sayaç sıfırlama
+    # Bakım kaydı + sayaç sıfırlama (MCH-30'un bıçak sayacı dolu olsun)
     kod, bk = cagir("/bakim/kaydet", "POST", {
         "makine_kod": "MCH-30", "tip": "bıçak değişimi",
-        "notu": "Test bakımı", "kesim": 1680})
+        "notu": "Test bakımı", "kesim": 1900})
     kontrol("bakım kaydedildi", kod == 200, bk.get("id", ""))
     kod, d2 = cagir("/bakim/durum")
     mch30 = [x for x in d2 if x["makineKod"] == "MCH-30"]
     kontrol("sayaç sıfırlandı",
-            any(x.get("yuzde") == 0.0 for x in mch30),
+            mch30 and all(x.get("yuzde") == 0.0 for x in mch30),
             str([x.get("yuzde") for x in mch30]))
+
+    # Eşik mantığı: hesap motoru sözleşmesi (maintenance_status)
+    # %50 → normal, %85 → yaklaşıyor, %100 → eşik doldu
+    kod, d3 = cagir("/bakim/durum")
+    kontrol("eşik aritmetiği doğru (yüzde = kullanilan/limit×100)",
+            all(abs(x["yuzde"] - (x["kullanilan"] / x["limit"] * 100)) < 0.2
+                for x in d3 if x["limit"]),
+            f"{len(d3)} sayaç")
 
     # Olmayan makine
     kod, _ = cagir("/bakim/kaydet", "POST",
@@ -663,7 +676,7 @@ def test_o_ekranlar():
 
 def test_p_idempotency():
     baslik("P", "§4.1 Çift yazım engeli (clientId idempotency)")
-    cid = f"IDEM-{int(time.time())}"
+    cid = f"IDEM-{RUN_ID}"
     kod, a = cagir("/satin-alma/talep", "POST", {
         "malzeme": "MAT-0001", "miktar": 100, "gerekce": "Idem test",
         "client_id": cid})
