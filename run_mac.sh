@@ -24,4 +24,7 @@ echo "     süre dolunca TAMAMLANDI olur."
 echo "  3. Hedef 850 °C'yi aşarsa ALARM düşer, brülör kapanır."
 echo ""
 
+# Simülasyon hız çarpanı: ./erp_simulation/run_mac.sh 10  -> 10x hızlı
+export SIM_SPEED="${1:-${SIM_SPEED:-1}}"
+echo "Simülasyon hızı: ${SIM_SPEED}x"
 exec .venv/bin/python -m erp_simulation.main

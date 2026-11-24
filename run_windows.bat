@@ -20,4 +20,6 @@ echo   2. 'Başlat' ile fırını çalıştır.
 echo   3. 850 °C üzeri alarm testi yapabilirsin.
 echo.
 
+if "%SIM_SPEED%"=="" set SIM_SPEED=1
+echo Simulasyon hizi: %SIM_SPEED%x  ^(hizli test icin: set SIM_SPEED=10 ^&^& run_windows.bat^)
 .venv\Scripts\python -m erp_simulation.main

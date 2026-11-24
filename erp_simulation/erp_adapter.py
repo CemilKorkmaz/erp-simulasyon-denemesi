@@ -6,7 +6,7 @@ import sqlite3
 import time
 from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -167,26 +167,94 @@ def get_readings_api(furnace: str, limit: int = 200):
     return get_readings(furnace, limit)
 
 
+# ---------- WebSocket ----------
+# NOT: Bu endpoint daha önce yoktu. Arayüz /api/ws'ye bağlanmaya çalışıp
+# sürekli başarısız oluyor, sonra kendini yeniliyordu ("Bağlantı koptu" döngüsü).
+import json
+
+ACTIVE_SOCKETS: set[WebSocket] = set()
+
+
+async def broadcast(message: dict) -> None:
+    if not ACTIVE_SOCKETS:
+        return
+    data = json.dumps(message, default=str)
+    for ws in list(ACTIVE_SOCKETS):
+        try:
+            await ws.send_text(data)
+        except Exception:
+            ACTIVE_SOCKETS.discard(ws)
+
+
+@app.websocket("/api/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    ACTIVE_SOCKETS.add(websocket)
+    # Bağlanır bağlanmaz anlık durumu gönder; istemci boş pano görmez.
+    try:
+        await websocket.send_text(json.dumps({
+            "type": "tick",
+            "ts": time.time(),
+            "furnaces": plant.get_states(),
+            "orders": plant.get_orders(),
+        }, default=str))
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        ACTIVE_SOCKETS.discard(websocket)
+
+
 # ---------- Simülasyon döngüsü ----------
 import asyncio
 
+# Simülasyon hız çarpanı (1 = gerçek zamanlı). Test/demo için: SIM_SPEED=10
+import os
+
+SIM_SPEED = max(0.1, float(os.environ.get("SIM_SPEED", "1")))
+LOOP_DT = 0.25
+SIM_DT = LOOP_DT * SIM_SPEED
+
+
 async def simulation_loop():
     while True:
-        await asyncio.sleep(1.0)
-        plant.update(1.0)
+        await asyncio.sleep(LOOP_DT)
+        events = plant.update(SIM_DT)
         states = plant.get_states()
-        for name, s in states.items():
-            add_reading(
-                furnace=name,
-                temperature=s["temperature"],
-                target_temperature=s["target_temperature"],
-                status=s["status"],
-                burner_on=s["burner_on"],
-                gas_consumption=s["gas_consumption"],
-                energy_total=s["energy_total"],
-                cycle_time=s["cycle_time"],
-                alarm=s["alarm"],
-            )
+        # DB yazımı hata verse bile canlı yayın devam etsin.
+        try:
+            for name, s in states.items():
+                add_reading(
+                    furnace=name,
+                    temperature=s["temperature"],
+                    target_temperature=s["target_temperature"],
+                    status=s["status"],
+                    burner_on=s["burner_on"],
+                    gas_consumption=s["gas_consumption"],
+                    energy_total=s["energy_total"],
+                    cycle_time=s["cycle_time"],
+                    alarm=s["alarm"],
+                )
+            # Tamamlanan emirleri veritabanına yaz.
+            for event in events:
+                if event.get("type") == "order_completed":
+                    summary = event["summary"]
+                    update_order(
+                        summary["order_id"],
+                        state="COMPLETED",
+                        finished_at=time.time(),
+                        energy_total_m3=summary["energy_total_m3"],
+                        cycle_time_s=summary["cycle_time_s"],
+                    )
+        except Exception as exc:  # pragma: no cover - savunma amaçlı
+            print("Veritabanı yazma hatası (canlı akış sürüyor):", exc)
+        await broadcast({
+            "type": "tick",
+            "ts": time.time(),
+            "furnaces": states,
+            "orders": plant.get_orders(),
+        })
 
 
 @app.on_event("startup")

@@ -64,37 +64,68 @@ const furnaceTbody = document.querySelector('#furnaces tbody');
 const orderTbody = document.querySelector('#orders tbody');
 const inpFurnace = document.getElementById('inpFurnace');
 
-async function load(){
-  const [fResp, oResp] = await Promise.all([
-    fetch('/api/furnaces'), fetch('/api/orders')
-  ]);
-  const furnaces = await fResp.json();
-  const orders = await oResp.json();
+// Aynı isimli satırlar tekrar tekrar kurulmaz: satırlar bir kez oluşturulur,
+// sonra sadece hücre içerikleri güncellenir. Böylece yazdığın metin / seçtiğin
+// fırın her saniye sıfırlanmaz ve sipariş oluşturma yarıda kesilmez.
+const furnaceRows = new Map();   // name -> {tr, cells}
+let furnaceSelectBuilt = false;
 
-  furnaceTbody.innerHTML = '';
+function cell(tr, text) {
+  const td = document.createElement('td');
+  td.textContent = text;
+  tr.appendChild(td);
+  return td;
+}
+
+function buildFurnaceSelect(names) {
+  if (furnaceSelectBuilt) return;
+  const previous = inpFurnace.value;
   inpFurnace.innerHTML = '';
-  for (const [name, s] of Object.entries(furnaces)){
-    const tr = document.createElement('tr');
-    const alarmClass = s.alarm ? 'alarm' : (s.status_kodu === 'OFF' ? 'off' : 'ok');
-    tr.innerHTML = `
-      <td><b>${name}</b></td>
-      <td>${s.type}</td>
-      <td>${s.temperature} °C</td>
-      <td>${s.target_temperature} °C</td>
-      <td><span class="badge ${alarmClass}">${s.status}</span></td>
-      <td>${s.burner_on ? 'AÇIK 🔥' : 'KAPALI'}</td>
-      <td>${s.gas_consumption} m³/h</td>
-      <td>${s.cycle_time} sn</td>
-      <td>${s.alarm || '—'}</td>
-    `;
-    furnaceTbody.appendChild(tr);
-
+  for (const name of names) {
     const opt = document.createElement('option');
     opt.value = name;
     opt.textContent = name;
     inpFurnace.appendChild(opt);
   }
+  if (previous) inpFurnace.value = previous;
+  furnaceSelectBuilt = true;
+}
 
+function renderFurnaces(furnaces) {
+  for (const [name, s] of Object.entries(furnaces)) {
+    let row = furnaceRows.get(name);
+    if (!row) {
+      const tr = document.createElement('tr');
+      cell(tr, '').innerHTML = `<b>${name}</b>`;
+      const cells = {
+        type: cell(tr, s.type),
+        temp: cell(tr, ''),
+        target: cell(tr, ''),
+        status: cell(tr, ''),
+        burner: cell(tr, ''),
+        gas: cell(tr, ''),
+        cycle: cell(tr, ''),
+        alarm: cell(tr, ''),
+      };
+      furnaceTbody.appendChild(tr);
+      row = { tr, cells };
+      furnaceRows.set(name, row);
+    }
+
+    const c = row.cells;
+    const alarmClass = s.alarm ? 'alarm' : (s.status_kodu === 'OFF' ? 'off' : 'ok');
+    c.temp.textContent = s.temperature + ' °C';
+    c.target.textContent = s.target_temperature + ' °C';
+    c.status.innerHTML = `<span class="badge ${alarmClass}">${s.status}</span>`;
+    c.burner.textContent = s.burner_on ? 'AÇIK 🔥' : 'KAPALI';
+    c.gas.textContent = s.gas_consumption + ' m³/h';
+    c.cycle.textContent = s.cycle_time + ' sn';
+    c.alarm.textContent = s.alarm || '—';
+  }
+  buildFurnaceSelect(Object.keys(furnaces));
+}
+
+function renderOrders(orders) {
   orderTbody.innerHTML = '';
   for (const o of orders){
     const tr = document.createElement('tr');
@@ -109,15 +140,42 @@ async function load(){
   }
 }
 
+function applyData(furnaces, orders) {
+  renderFurnaces(furnaces);
+  renderOrders(orders);
+}
+
+async function load(){
+  try {
+    const [fResp, oResp] = await Promise.all([
+      fetch('/api/furnaces'), fetch('/api/orders')
+    ]);
+    if (!fResp.ok || !oResp.ok) throw new Error('HTTP ' + fResp.status);
+    applyData(await fResp.json(), await oResp.json());
+  } catch (e) {
+    console.warn('Veri alınamadı:', e);
+  }
+}
+
 async function startOrder(orderId){
   const furnace = inpFurnace.value;
   if(!furnace){ alert('Fırın seçin'); return; }
-  await fetch('/api/orders/'+encodeURIComponent(orderId)+'/start', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({furnace})
-  });
-  load();
+  try {
+    const res = await fetch('/api/orders/'+encodeURIComponent(orderId)+'/start', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({furnace})
+    });
+    if (!res.ok) {
+      let detail = await res.text();
+      try { detail = JSON.parse(detail).detail || detail; } catch (e) { /* düz metin */ }
+      alert('Başlatılamadı: ' + detail);
+      return;
+    }
+    load();
+  } catch (e) {
+    alert('Sunucuya ulaşılamadı: ' + e);
+  }
 }
 
 document.getElementById('btnCreate').addEventListener('click', async ()=>{
@@ -126,25 +184,63 @@ document.getElementById('btnCreate').addEventListener('click', async ()=>{
   const target = parseFloat(document.getElementById('inpTarget').value);
   const duration = parseFloat(document.getElementById('inpDuration').value);
   if(!product || !furnace || !target || !duration){ alert('Tüm alanları doldur'); return; }
-  await fetch('/api/orders', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({product, furnace, target_temp:target, duration_min:duration})
-  });
-  document.getElementById('inpProduct').value = '';
-  load();
+  try {
+    const res = await fetch('/api/orders', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({product, furnace, target_temp:target, duration_min:duration})
+    });
+    if (!res.ok) {
+      let detail = await res.text();
+      try { detail = JSON.parse(detail).detail || detail; } catch (e) { /* düz metin */ }
+      alert('Sipariş oluşturulamadı: ' + detail);
+      return;
+    }
+    document.getElementById('inpProduct').value = '';
+    load();
+  } catch (e) {
+    alert('Sunucuya ulaşılamadı: ' + e);
+  }
 });
 
-const ws = new WebSocket(WS_URL);
-ws.onopen = ()=>{ wsDot.className='dot online'; wsStatus.textContent='Canlı veri aktif'; };
-ws.onclose = ()=>{ wsDot.className='dot'; wsStatus.textContent='Bağlantı koptu'; setTimeout(()=>location.reload(), 3000); };
-ws.onmessage = (e)=>{
-  const msg = JSON.parse(e.data);
-  if(msg.type === 'tick'){ load(); }
-};
+// WebSocket: kopunca SAYFA YENİLENMEZ. Sadece yeniden bağlanmayı dener;
+// o sırada REST (load) 3 sn'de bir çalışmaya devam eder, pano boş kalmaz.
+let ws = null;
+let wsRetry = 0;
 
-setInterval(load, 2000);
+function connectWs(){
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  try { ws = new WebSocket(WS_URL); } catch (e) { scheduleReconnect(); return; }
+
+  ws.onopen = ()=>{
+    wsRetry = 0;
+    wsDot.className = 'dot online';
+    wsStatus.textContent = 'Canlı veri aktif';
+    load();
+  };
+  ws.onclose = ()=>{
+    wsDot.className = 'dot';
+    scheduleReconnect();
+  };
+  ws.onmessage = (e)=>{
+    let msg;
+    try { msg = JSON.parse(e.data); } catch (err) { return; }
+    if (msg.type === 'tick') applyData(msg.furnaces, msg.orders);
+  };
+}
+
+let retryTimer = null;
+function scheduleReconnect(){
+  clearTimeout(retryTimer);
+  const delay = Math.min(1000 * Math.pow(2, wsRetry), 15000);
+  wsRetry += 1;
+  wsStatus.textContent = 'Canlı akış yok, ' + Math.round(delay/1000) + ' sn sonra yeniden denenecek…';
+  retryTimer = setTimeout(connectWs, delay);
+}
+
+setInterval(()=>{ if (!ws || ws.readyState !== WebSocket.OPEN) load(); }, 3000);
 load();
+connectWs();
 </script>
 </body>
 </html>
