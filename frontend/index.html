@@ -18,7 +18,8 @@
   h1 { font-size: 18px; margin: 0; letter-spacing: 0.4px; }
   .ws { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 6px #ef4444; }
   .ws.online { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
-  .ws.offline { background: #64748b; }
+  .ws.offline { background: #64748b; box-shadow: none; }
+  .ws.connecting { background: #f59e0b; box-shadow: 0 0 6px #f59e0b; }
   main { max-width: 1400px; margin: 0 auto; padding: 24px; display: grid; grid-template-columns: 1fr; gap: 24px; }
   @media (min-width: 900px) { main { grid-template-columns: 1fr 340px; } }
 
@@ -84,13 +85,37 @@
 
   .start-row { display: flex; gap: 8px; margin-top: 6px; }
   select.furnace-select { max-width: 170px; }
+
+  /* Hız kontrolü (sağ üst) */
+  .speed-box { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  .speed-box .label { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
+  .speed-btns { display: flex; gap: 3px; background: #0f172a; padding: 3px; border-radius: 9px; border: 1px solid #334155; }
+  .speed-btns button {
+    background: transparent; color: #cbd5e1; border: none; padding: 5px 9px;
+    border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; line-height: 1;
+  }
+  .speed-btns button:hover { background: #334155; }
+  .speed-btns button.active { background: #2563eb; color: #fff; }
+  .speed-btns button:disabled { opacity: 0.4; }
+  #speedInfo { font-size: 11px; color: #64748b; min-width: 54px; }
+  @media (max-width: 820px) {
+    header { flex-wrap: wrap; }
+    .speed-box { margin-left: 0; width: 100%; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <div class="ws" id="wsDot" title="WebSocket bağlantısı"></div>
+  <div class="ws" id="wsDot" title="Tarayıcı ↔ yerel ERP backend (WebSocket). Gerçek ERP/fabrika bağlantısı DEĞİLDİR."></div>
   <h1>ERP + Fabrika Simülasyonu <span class="type">· Canlı makine takibi</span></h1>
-  <span class="muted" id="wsStatus">Bağlanıyor…</span>
+  <button id="btnReconnect" class="secondary" style="padding:4px 10px;font-size:12px;" title="Sayfayı yenilemeden bağlantıyı yeniden dener">Yeniden bağlan</button>
+
+  <div class="speed-box">
+    <span class="label">Simülasyon hızı</span>
+    <div class="speed-btns" id="speedBtns"></div>
+    <span id="speedInfo" title="Kaç saniyelik simülasyon zamanı, 1 gerçek saniyede işleniyor"></span>
+  </div>
+  <span class="muted" id="wsStatus" style="display:none;">Yerel sunucuya bağlanıyor…</span>
 </header>
 
 <main>
@@ -138,47 +163,183 @@ const furnaceGrid = document.getElementById('furnaceGrid');
 const ordersTbody = document.querySelector('#ordersTable tbody');
 const alarmsBox = document.getElementById('alarms');
 const inpFurnace = document.getElementById('inpFurnace');
+const btnReconnect = document.getElementById('btnReconnect');
 
 let furnaces = {};   // name -> DOM kart nesnesi
 let orders = [];
 let alarmHistory = [];
 
-// ------------------------------------------------------------------ başlat
+// WebSocket yönetimi: kopunca SAYFA YENİLENMEZ, sadece sessizce yeniden bağlanır.
+// (Eski sürüm location.reload() yapıyordu; bu yüzden form doldururken sayfa sürekli
+//  yenileniyor ve sipariş oluşturulamıyordu.)
+let ws = null;
+let wsRetry = 0;
+let wsRetryTimer = null;
+let manualReconnect = false;
+let restPollTimer = null;
+let lastDataAt = 0;
 
-async function init() {
+// Bağlantı durumu artık sağ üstteki HIZ kutusunun yanında küçük bir
+// etiketle gösteriliyor (eski "Bağlanıyor…" metni yerine).
+function setWsState(state, text) {
+  wsDot.className = 'ws ' + state;
+  wsStatus.textContent = text;
+  const info = document.getElementById('speedInfo');
+  if (info) {
+    if (state === 'online') info.textContent = '· canlı';
+    else if (state === 'connecting') info.textContent = '· bağlanıyor';
+    else info.textContent = '· çevrimdışı';
+  }
+}
+
+function connectWs() {
+  clearTimeout(wsRetryTimer);
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  if (restPollTimer) { clearInterval(restPollTimer); restPollTimer = null; }
+
+  setWsState('connecting', wsRetry === 0 ? 'Yerel sunucuya bağlanıyor…' : 'Bağlanıyor… (deneme ' + (wsRetry + 1) + ')');
+
   try {
-    const [fResp, oResp] = await Promise.all([
-      fetch('/api/furnaces'), fetch('/api/orders')
-    ]);
-    const fData = await fResp.json();
-    const oData = await oResp.json();
-    orders = oData;
-    buildFurnaceCards(fData);
-    renderOrders();
+    ws = new WebSocket(WS_URL);
   } catch (e) {
-    console.error('Başlatma hatası:', e);
+    scheduleReconnect();
+    return;
   }
 
-  const ws = new WebSocket(WS_URL);
   ws.onopen = () => {
-    wsDot.className = 'ws online';
-    wsStatus.textContent = 'Canlı veri akışı aktif';
+    wsRetry = 0;
+    manualReconnect = false;
+    setWsState('online', 'Canlı veri akışı aktif');
+    loadSnapshot();   // kaçırılan verileri hemen tazele
   };
+
   ws.onclose = () => {
-    wsDot.className = 'ws offline';
-    wsStatus.textContent = 'Bağlantı koptu, yeniden deneniyor…';
-    setTimeout(() => location.reload(), 3000);
+    scheduleReconnect();
   };
-  ws.onerror = () => { wsDot.className = 'ws offline'; };
+
+  ws.onerror = () => { /* onclose otomatik gelir */ };
+
   ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data);
+    let msg;
+    try { msg = JSON.parse(event.data); } catch (e) { return; }
     if (msg.type === 'tick') {
+      lastDataAt = Date.now();
       updateFurnaces(msg.furnaces);
       orders = msg.orders;
       renderOrders();
       renderAlarms(msg.furnaces, msg.ts);
     }
   };
+}
+
+function scheduleReconnect() {
+  clearTimeout(wsRetryTimer);
+  // Canlı akış yokken 3 sn'de bir REST'ten oku: pano boş kalmaz, form çalışmaya devam eder.
+  if (!restPollTimer) {
+    restPollTimer = setInterval(() => { if (!ws || ws.readyState !== WebSocket.OPEN) loadSnapshot(); }, 3000);
+  }
+  const delay = Math.min(1000 * Math.pow(2, wsRetry), 15000);
+  wsRetry += 1;
+  if (manualReconnect) {
+    setWsState('offline', 'Yerel sunucuya ulaşılamıyor — sunucu kapalı olabilir');
+  } else {
+    setWsState('offline', 'Canlı akış yok, ' + Math.round(delay / 1000) + ' sn içinde yeniden denenecek…');
+  }
+  wsRetryTimer = setTimeout(() => { manualReconnect = false; connectWs(); }, delay);
+}
+
+function reconnectNow() {
+  wsRetry = 0;
+  manualReconnect = true;
+  try { if (ws) ws.close(); } catch (e) { /* yoksay */ }
+  ws = null;
+  connectWs();
+}
+
+btnReconnect.addEventListener('click', reconnectNow);
+
+// ------------------------------------------------------------------ hız kontrolü
+
+let currentSpeed = 1;
+
+function renderSpeedButtons(speeds, active) {
+  const box = document.getElementById('speedBtns');
+  box.innerHTML = '';
+  for (const sp of speeds) {
+    const b = document.createElement('button');
+    b.textContent = sp + 'x';
+    b.title = sp === 1
+      ? 'Gerçek zamanlı (yavaş: 750 °C ~10 dk)'
+      : sp + ' kat hızlı (fizik modeli aynı, sadece zaman hızlı akar)';
+    if (Number(sp) === Number(active)) b.className = 'active';
+    b.addEventListener('click', () => setSpeed(sp));
+    box.appendChild(b);
+  }
+}
+
+async function setSpeed(speed) {
+  const box = document.getElementById('speedBtns');
+  const btns = box.querySelectorAll('button');
+  btns.forEach(b => b.disabled = true);
+  try {
+    const res = await fetch('/api/speed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ speed: Number(speed) }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    currentSpeed = data.speed;
+    btns.forEach(b => {
+      b.className = (b.textContent === currentSpeed + 'x') ? 'active' : '';
+    });
+  } catch (e) {
+    alert('Hız değiştirilemedi: ' + e);
+  } finally {
+    btns.forEach(b => b.disabled = false);
+  }
+}
+
+async function loadSpeed() {
+  try {
+    const res = await fetch('/api/speed');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    currentSpeed = data.speed;
+    renderSpeedButtons(data.adimlar || [1, 2, 5, 10, 25, 50], data.speed);
+  } catch (e) {
+    // Eski backend'de /api/speed olmayabilir; sessizce geç.
+    console.warn('Hız bilgisi alınamadı:', e);
+  }
+}
+
+// ------------------------------------------------------------------ veri
+
+async function loadSnapshot() {
+  try {
+    const [fResp, oResp] = await Promise.all([
+      fetch('/api/furnaces'), fetch('/api/orders')
+    ]);
+    if (!fResp.ok || !oResp.ok) throw new Error('HTTP ' + fResp.status + '/' + oResp.status);
+    const fData = await fResp.json();
+    const oData = await oResp.json();
+    if (Object.keys(furnaces).length !== Object.keys(fData).length) {
+      buildFurnaceCards(fData);
+    }
+    updateFurnaces(fData);
+    orders = oData;
+    renderOrders();
+    renderAlarms(fData, Date.now() / 1000);
+    lastDataAt = Date.now();
+  } catch (e) {
+    console.warn('Anlık veri alınamadı:', e);
+  }
+}
+
+async function init() {
+  await loadSpeed();
+  await loadSnapshot();
+  connectWs();
 }
 
 // ------------------------------------------------------------------ fırınlar
@@ -251,7 +412,8 @@ function updateFurnaces(data) {
     if (f.temps.length > 60) f.temps.shift();
     f.maxSeen = Math.max(f.maxSeen, s.temperature);
     f.minSeen = Math.min(f.minSeen, s.temperature);
-    drawSpark(f);
+    // Grafik çizimi başarısız olsa bile veri güncellemesi devam etsin.
+    try { drawSpark(f); } catch (e) { /* grafik opsiyonel */ }
   }
 }
 
@@ -340,13 +502,21 @@ async function startOrder(orderId) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ furnace: furnace }),
     });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) {
+      let detail = await res.text();
+      try { detail = JSON.parse(detail).detail || detail; } catch (e) { /* düz metin */ }
+      alert('Emir başlatılamadı: ' + detail);
+      return;
+    }
+    await loadSnapshot();
   } catch (e) {
-    alert('Başlatılamadı: ' + e);
+    alert('Sunucuya ulaşılamadı (yerel sunucu kapalı olabilir): ' + e);
   }
 }
 
-document.getElementById('btnCreateOrder').addEventListener('click', async () => {
+const btnCreateOrder = document.getElementById('btnCreateOrder');
+
+btnCreateOrder.addEventListener('click', async () => {
   const product = document.getElementById('inpProduct').value.trim();
   const furnace = inpFurnace.value;
   const target = parseFloat(document.getElementById('inpTarget').value);
@@ -354,6 +524,8 @@ document.getElementById('btnCreateOrder').addEventListener('click', async () => 
   if (!product || !furnace || !target || !duration) {
     alert('Tüm alanları doldurun.'); return;
   }
+  // Çift tıklama / çift istekle mükerrer sipariş oluşmasın.
+  btnCreateOrder.disabled = true;
   try {
     const res = await fetch('/api/orders', {
       method: 'POST',
@@ -363,8 +535,17 @@ document.getElementById('btnCreateOrder').addEventListener('click', async () => 
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     document.getElementById('inpProduct').value = '';
+    await loadSnapshot();
+    if (data && data.id) {
+      wsStatus.textContent = data.id + ' oluşturuldu';
+      setTimeout(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) setWsState('online', 'Canlı veri akışı aktif');
+      }, 2500);
+    }
   } catch (e) {
-    alert('Oluşturulamadı: ' + e);
+    alert('Sipariş oluşturulamadı: ' + e);
+  } finally {
+    btnCreateOrder.disabled = false;
   }
 });
 

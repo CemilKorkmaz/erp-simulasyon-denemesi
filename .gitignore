@@ -3,3 +3,12 @@ __pycache__/
 *.pyc
 erp_sim.db
 .DS_Store
+
+# yerel veritabanlari
+factory_sim.db
+factory_erp.db
+
+# pyinstaller ciktilari
+build/
+dist/
+*.spec.bak

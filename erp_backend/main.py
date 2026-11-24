@@ -3,6 +3,11 @@
 Calistirmak icin (repo kokuundan):
     python3 -m erp_backend.main
 
+Hızlandırmak için (test/demo):
+    SIM_SPEED=10 python3 -m erp_backend.main
+    # 10 => simülasyonda 1 saniyelik fizik, gerçekte 0.1 saniyede işlenir.
+    # Fırın 30 dakikada alarm veriyorsa, SIM_SPEED=10 ile 3 dakikada verir.
+
 Arayüz:  http://localhost:8000
 OPC UA:  opc.tcp://localhost:4840/freeopcua/server/
 """
@@ -10,6 +15,7 @@ OPC UA:  opc.tcp://localhost:4840/freeopcua/server/
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -24,6 +30,20 @@ from simulator.plant import Plant
 from simulator.opcua_server import run_opcua_server
 from simulator.furnace import FurnaceParams
 from erp_backend.database import Database
+
+# ------------------------------------------------------------------ ayarlar
+
+# Simülasyon hız çarpanı. 1 = gerçek zamanlı. >1 = hızlandırılmış.
+# Örn. SIM_SPEED=10 -> simülasyonda 1 sn, gerçekte 0.1 sn.
+# Başlangıç değeri ortam değişkeninden okunur; arayüzden canlı değiştirilebilir.
+DEFAULT_SPEED = max(0.1, float(os.environ.get("SIM_SPEED", "1")))
+SIM_SPEED = DEFAULT_SPEED
+
+HIZ_ADIMLARI = [1, 2, 5, 10, 25, 50]
+
+# Gerçek zamanlı döngü adımı (saniye). Fizik adımı = LOOP_DT * SIM_SPEED
+# olacak şekilde sabit tutulur, yani SIM_SPEED fizik modelini bozmaz.
+LOOP_DT = 0.25
 
 # ------------------------------------------------------------------ veritabani
 
@@ -104,25 +124,48 @@ manager = ConnectionManager()
 # ------------------------------------------------------------------ simülasyon döngüsü
 
 async def simulation_loop() -> None:
-    """Her saniye: fırınları güncelle, veritabanına yaz, tarayıcılara yay."""
+    """Döngü adımı: fırınları güncelle, veritabanına yaz, tarayıcılara yay.
+
+    SIM_SPEED=1  -> saniyede 4 fizik adımı x 0.25 sn = gerçek zamanlı (1x)
+    SIM_SPEED=10 -> saniyede 4 fizik adımı x 2.50 sn = 10 kat hızlı
+    Fizik modeli (ısıtma eğrisi, alarm, reçete) aynı kalır; sadece zaman ilerler.
+    """
     while True:
-        await asyncio.sleep(1.0)
-        plant.update(1.0)
+        await asyncio.sleep(LOOP_DT)
+        # Hız her adımda okunur: arayüzden değiştirilince hemen etki eder.
+        events = plant.update(LOOP_DT * SIM_SPEED)
         states = plant.get_states()
         orders = plant.get_orders()
 
-        for name, s in states.items():
-            DB.add_reading(
-                furnace=name,
-                temperature=s["temperature"],
-                target_temperature=s["target_temperature"],
-                status=s["status"],
-                burner_on=s["burner_on"],
-                gas_consumption=s["gas_consumption"],
-                energy_total=s["energy_total"],
-                cycle_time=s["cycle_time"],
-                alarm=s["alarm"],
-            )
+        # Çevrimi tamamlanan emirleri veritabanına da yansıt (özet bilgilerle).
+        # Not: DB yazımı başarısız olsa bile canlı yayın (WebSocket) devam etsin;
+        # eskiden burada oluşan bir hata tüm simülasyon döngüsünü durduruyordu.
+        try:
+            for event in events:
+                if event.get("type") == "order_completed":
+                    summary = event["summary"]
+                    DB.update_order(
+                        summary["order_id"],
+                        state="COMPLETED",
+                        finished_at=time.time(),
+                        energy_total_m3=summary["energy_total_m3"],
+                        cycle_time_s=summary["cycle_time_s"],
+                    )
+
+            for name, s in states.items():
+                DB.add_reading(
+                    furnace=name,
+                    temperature=s["temperature"],
+                    target_temperature=s["target_temperature"],
+                    status=s["status"],
+                    burner_on=s["burner_on"],
+                    gas_consumption=s["gas_consumption"],
+                    energy_total=s["energy_total"],
+                    cycle_time=s["cycle_time"],
+                    alarm=s["alarm"],
+                )
+        except Exception as exc:  # pragma: no cover - savunma amaçlı
+            print("Veritabanı yazma hatası (canlı akış sürüyor):", exc)
 
         await manager.broadcast({
             "type": "tick",
@@ -143,7 +186,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="ERP Fabrika Simülasyonu", lifespan=lifespan)
 
-app.mount("/frontend", StaticFiles(directory="frontend"), name="frontend")
+# Arayüz klasörü: normal çalışmada repo kökündeki "frontend",
+# paketlenmiş (exe) çalışmada _MEIPASS içindeki kopya.
+FRONTEND_DIR = os.environ.get("ERP_FRONTEND_DIR", "frontend")
+INDEX_HTML = os.path.join(FRONTEND_DIR, "index.html")
+
+if os.path.isdir(FRONTEND_DIR):
+    app.mount("/frontend", StaticFiles(directory=FRONTEND_DIR), name="frontend")
 
 
 class OrderIn(BaseModel):
@@ -155,7 +204,7 @@ class OrderIn(BaseModel):
 
 @app.get("/")
 async def index():
-    return FileResponse("frontend/index.html")
+    return FileResponse(INDEX_HTML)
 
 
 @app.get("/api/furnaces")
@@ -211,6 +260,23 @@ async def start_order(order_id: str, payload: dict):
     return {"ok": True, "order_id": order_id, "furnace": furnace}
 
 
+class SpeedIn(BaseModel):
+    speed: float
+
+
+@app.get("/api/speed")
+async def get_speed():
+    return {"speed": SIM_SPEED, "adimlar": HIZ_ADIMLARI}
+
+
+@app.post("/api/speed")
+async def set_speed(data: SpeedIn):
+    global SIM_SPEED
+    speed = max(0.1, min(float(data.speed), 100.0))
+    SIM_SPEED = speed
+    return {"speed": SIM_SPEED}
+
+
 @app.get("/api/readings/{furnace}")
 async def get_readings(furnace: str, limit: int = 200):
     return DB.get_readings(furnace, limit)
@@ -227,5 +293,10 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 
+def run(port: int = 8000, host: str = "0.0.0.0") -> None:
+    """Sunucuyu çalıştırır. Hem `python -m` hem exe başlatıcı bunu kullanır."""
+    uvicorn.run(app, host=host, port=port, log_level="info")
+
+
 if __name__ == "__main__":
-    uvicorn.run("erp_backend.main:app", host="0.0.0.0", port=8000)
+    run()

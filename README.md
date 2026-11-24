@@ -28,25 +28,81 @@ Simüle edilen fırınlar (rehberdeki ekipmanlarla birebir):
 
 ## Kurulum ve çalıştırma
 
-Terminali repodaki klasörde aç ve çalıştır:
+### En kolay yol: çift tıkla (terminal yok)
+
+| İşletim sistemi | Çift tıklanacak dosya | Not |
+|-----------------|------------------------|-----|
+| **Windows** | `Baslat.bat` | Python kurulu olmalı |
+| **Windows** | `ERP_Simulasyon.exe` | Python bile gerekmez (Actions ile derlenir) |
+| **macOS** | `Baslat.command` | İlk sefer `chmod +x Baslat.command` |
+| **Linux** | `Baslat.sh` | İlk sefer `chmod +x Baslat.sh` |
+
+Çift tıkladığında: ilk seferde paketler kurulur (1-3 dk), sonra sunucu başlar
+ve **tarayıcı kendiliğinden** `http://localhost:8000` adresinde açılır.
+Terminale hiçbir şey yazman gerekmez. Kapatmak için pencereyi kapat.
+
+Ayrıntılı anlatım: [`README_CIFT_TIKLA.txt`](README_CIFT_TIKLA.txt)
+
+### `.exe` dosyasını nereden alırım?
+
+GitHub → **Actions** → **"Uygulama Derle"** → **Run workflow** →
+bitince çalışmanın altındaki **Artifacts** bölümünden
+`ERP_Simulasyon-Windows` zip'ini indir, içindeki `.exe`'ye çift tıkla.
+
+Kendi bilgisayarında derlemek istersen:
 
 ```bash
-./start.sh
+pip install -r requirements.txt pyinstaller
+pyinstaller --noconfirm --clean erp_launcher.spec
+# çıktı: dist/ERP_Simulasyon(.exe)
 ```
+
+### Terminal sevenler için
+
+```bash
+./start.sh 10      # 10 kat hızlı — demo/test için ÖNERİLEN
+```
+
+veya gerçek zamanlı (gerçekçi ama yavaş):
+
+```bash
+./start.sh         # 1x = gerçek zamanlı
+```
+
+Sonra tarayıcıda **http://localhost:8000** adresini aç.
+
+> **Hız çarpanı neden önemli?** 1x hızda bir fırının 750 °C'ye çıkması ~10 dakika,
+> `900 °C` alarm testi ~**30 dakika** sürer. `./start.sh 10` ile aynı senaryolar
+> ~10 kat kısa sürede tamamlanır. Fizik modeli (ısıtma eğrisi, reçete, alarm
+> eşiği) değişmez — sadece zaman hızlı akar.
+
+| Hız | 750 °C'ye çıkış | Alarm testi (900 °C) | Ne zaman kullan |
+|-----|-----------------|----------------------|-----------------|
+| `1x` (varsayılan) | ~10 dk | ~30 dk | Gerçek fabrikaya benzer davranış |
+| `10x` | ~1 dk | ~3 dk | Demo, test, "hemen göreyim" |
+| `25x` | ~25 sn | ~1 dk | Sadece hızlı deneme |
 
 `start.sh` şunları yapar:
 
 1. Gerekli Python paketlerini bir sanal ortama (`.venv`) yükler (`fastapi`, `uvicorn`, `asyncua`, `sqlalchemy`).
-2. Sanal fabrika simülasyonunu başlatır (her saniye fırın durumlarını günceller).
+2. Sanal fabrika simülasyonunu başlatır (fırın durumları sürekli güncellenir).
 3. OPC UA sunucusunu açar: `opc.tcp://localhost:4840/freeopcua/server/`
 4. ERP arayüzünü açar: **http://localhost:8000**
+
+> `start.sh` olmadan doğrudan: `SIM_SPEED=10 .venv/bin/python -m erp_backend.main`
 
 ### Arayüzde neler yapabilirsin?
 
 - **Fırın kartları:** Anlık sıcaklık, hedef sıcaklık, durum (KAPALI/ISINIYOR/BEKLETIYOR/ALARM), brülör açık/kapalı, gaz tüketimi, kümülatif enerji, çevrim süresi, küçük geçiş grafiği.
 - **Üretim emirleri:** Yeni sipariş oluştur (ürün, fırın, hedef sıcaklık, süre), fırına ata ve "Başlat" ile çevrimi başlat. Sıcaklık hedefe ulaştığında bekletmeye, süre dolduğunda emir TAMAMLANDI olarak geçer.
 - **Alarmlar:** Aşırı sıcaklık (850 °C üstü) anında alarm döner ve brülör kapanır.
-- **Canlılık:** Sağ üstteki nokta yeşilken WebSocket üzerinden veri akışı aktif demektir.
+- **Canlılık:** Sağ üstteki nokta **yeşil**ken canlı veri akışı aktif demektir. Nokta **gri/turuncu** ise sayfa yenilenmez; panoya 3 saniyede bir REST üzerinden veri gelmeye devam eder ve bağlantı arka planda yeniden denenir. **Yeniden bağlan** butonuyla elle de deneyebilirsin.
+- **Hız kontrolü (sağ üst):** `1x / 2x / 5x / 10x / 25x / 50x` düğmeleriyle simülasyon hızını **canlı** değiştir. Yeniden başlatmak gerekmez; düğme anında etki eder (fizik modeli aynı kalır, sadece zaman hızlı akar).
+
+> **"Bağlantı koptu" ne demek? ERP'ye mi bağlanıyor?**
+> Hayır. O gösterge **tarayıcı ↔ yerel backend (localhost:8000)** bağlantısını gösterir,
+> gerçek ERP/PLC bağlantısını değil. Nedenleri, ne düzeltildiği ve **gerçek ERP/PLC'ye
+> nasıl bağlanılacağı** için: [`BAGLANTI_REHBERI.md`](BAGLANTI_REHBERI.md)
 
 ## Uçtan uca test senaryosu
 

@@ -48,6 +48,9 @@ class Furnace:
             temperature=config.ambient_temp,
             target_temperature=config.target_temp,
         )
+        # Simülasyon saati (gerçek saat değil). update(dt) ile ilerler; bekleme
+        # süresi bu saatle ölçülür ki SIM_SPEED hızlandırması reçeteyi de kısaltır.
+        self.sim_time: float = 0.0
 
     def start_order(self, order_id: str, product: str, target_temp: float,
                     duration_min: float, now: float) -> None:
@@ -85,6 +88,7 @@ class Furnace:
         events: list[dict] = []
         c = self.config
         s = self.state
+        self.sim_time += dt
         now = time.time()
 
         if s.status == FurnaceStatus.ALARM:
@@ -99,7 +103,7 @@ class Furnace:
             s.burner_on = True
             if s.temperature >= s.target_temperature - c.hold_band:
                 s.status = FurnaceStatus.HOLDING
-                s.soak_started_at = now
+                s.soak_started_at = self.sim_time
                 events.append({
                     "type": "target_reached",
                     "furnace": c.name,
@@ -111,7 +115,7 @@ class Furnace:
             elif s.temperature > s.target_temperature + c.hold_band:
                 s.burner_on = False
             if (s.order_id is not None and s.soak_started_at is not None
-                    and now - s.soak_started_at >= s.order_duration_s):
+                    and self.sim_time - s.soak_started_at >= s.order_duration_s):
                 summary = self.complete_order()
                 if summary:
                     events.append({"type": "order_completed", "summary": summary})

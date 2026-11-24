@@ -70,6 +70,11 @@ class Furnace:
         self.order_product: Optional[str] = None
         self.order_duration_s: float = 0.0
         self.soak_started_at: Optional[float] = None
+        # Simülasyon saati (gerçek saat değil). update(dt) ile ilerler.
+        # Bekleme süresi bu saatle ölçülür; böylece SIM_SPEED hızlandırması
+        # reçete sürelerini de aynı oranda kısaltır.
+        self.sim_time: float = 0.0
+        self._soak_started_sim: Optional[float] = None
 
     def start_order(self, order_id: str, product: str, target_temp: float,
                     duration_min: float, now: float) -> None:
@@ -81,6 +86,7 @@ class Furnace:
         self.state.status = FurnaceStatus.HEATING
         self.state.cycle_time = 0.0
         self.soak_started_at = None
+        self._soak_started_sim = None
         self.state.alarm = None
 
     def complete_order(self) -> Optional[dict]:
@@ -110,6 +116,8 @@ class Furnace:
         events: list[dict] = []
         p = self.params
         s = self.state
+        # Simülasyon saati: gerçek saatten bağımsız, dt kadar ilerler.
+        self.sim_time += dt
         now = time.time()
 
         # ---- Durum makinesi ----
@@ -128,7 +136,13 @@ class Furnace:
             # Hedefe ulaşıldığında bekletmeye geç.
             if s.temperature >= s.target_temperature - p.hold_band:
                 s.status = FurnaceStatus.HOLDING
-                s.soak_started_at = now
+                # DİKKAT: alan FurnaceState üzerinde (s), Furnace üzerinde değil.
+                # Eskiden self.soak_started_at yazılıyordu; bu yüzden
+                # state.soak_started_at hep None kalıyor ve emir asla TAMAMLANDI
+                # olmuyordu (fırın da sonsuza kadar meşgul görünüyordu).
+                # Başlangıç, GERÇEK saat değil SİMÜLASYON saatiyle tutulur.
+                s.soak_started_at = self.sim_time
+                self._soak_started_sim = self.sim_time
                 events.append({
                     "type": "target_reached",
                     "furnace": p.name,
@@ -141,8 +155,8 @@ class Furnace:
             elif s.temperature > s.target_temperature + p.hold_band:
                 s.burner_on = False
             # Üretim süresi dolduysa emri tamamla.
-            if (self.order_id is not None and self.soak_started_at is not None
-                    and now - self.soak_started_at >= self.order_duration_s):
+            if (self.order_id is not None and s.soak_started_at is not None
+                    and self.sim_time - s.soak_started_at >= self.order_duration_s):
                 summary = self.complete_order()
                 if summary:
                     events.append({"type": "order_completed", "summary": summary})

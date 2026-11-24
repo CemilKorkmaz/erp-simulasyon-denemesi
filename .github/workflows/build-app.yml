@@ -1,0 +1,122 @@
+# ERP + Sanal Fabrika Simülasyonu — çift tıklanabilir uygulama derleme
+#
+# Ne üretir?
+#   - Windows  : ERP_Simulasyon.exe      (çift tıkla → tarayıcı açılır)
+#   - macOS    : ERP_Simulasyon.command  (çift tıkla → tarayıcı açılır)
+#   - Linux    : ERP_Simulasyon          (çift tıkla → tarayıcı açılır)
+#
+# Nasıl çalışır?
+#   GitHub → Actions → "Uygulama Derle" → "Run workflow"
+#   Bitince: Actions çalışmasının altındaki "Artifacts" bölümünden
+#   ERP_Simulasyon-Windows / -macOS / -Linux zip'ini indir.
+#
+# Etiket (tag) atınca ayrıca Release'e de eklenir (v1.0 gibi).
+
+name: Uygulama Derle
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Release oluşturulsun mu?"
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: Derle (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+            artifact: ERP_Simulasyon-Windows
+          - os: macos-latest
+            name: macOS
+            artifact: ERP_Simulasyon-macOS
+          - os: ubuntu-latest
+            name: Linux
+            artifact: ERP_Simulasyon-Linux
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Bağımlılıkları kur
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Derle (Windows .exe)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean erp_launcher.spec
+          # Uygulama adını Türkçe karakter olmadan, tıklanabilir hâle getir
+          Copy-Item dist/ERP_Simulasyon.exe dist/ERP_Simulasyon.exe -Force
+          Compress-Archive -Path dist/ERP_Simulasyon.exe -DestinationPath "ERP_Simulasyon-Windows.zip" -Force
+          Get-Item dist/ERP_Simulasyon.exe | Select-Object Name, Length
+
+      - name: Derle (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          pyinstaller --noconfirm --clean erp_launcher.spec
+          # Çift tıklanabilir .command dosyası üret (Finder'dan çalışır)
+          cat > "dist/ERP_Simulasyon.command" <<'SH'
+          #!/bin/bash
+          cd "$(dirname "$0")"
+          "./ERP_Simulasyon"
+          SH
+          chmod +x "dist/ERP_Simulasyon.command"
+          cp README_CIFT_TIKLA.txt dist/ 2>/dev/null || true
+          cd dist && zip -r ../ERP_Simulasyon-macOS.zip ERP_Simulasyon ERP_Simulasyon.command README_CIFT_TIKLA.txt 2>/dev/null || zip -r ../ERP_Simulasyon-macOS.zip ERP_Simulasyon ERP_Simulasyon.command
+
+      - name: Derle (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          pyinstaller --noconfirm --clean erp_launcher.spec
+          cat > "dist/Baslat.sh" <<'SH'
+          #!/bin/bash
+          cd "$(dirname "$0")"
+          "./ERP_Simulasyon"
+          SH
+          chmod +x dist/Baslat.sh
+          cp README_CIFT_TIKLA.txt dist/ 2>/dev/null || true
+          cd dist && zip -r ../ERP_Simulasyon-Linux.zip ERP_Simulasyon Baslat.sh README_CIFT_TIKLA.txt 2>/dev/null || zip -r ../ERP_Simulasyon-Linux.zip ERP_Simulasyon Baslat.sh
+
+      - name: Artifact yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ERP_Simulasyon-*.zip
+          if-no-files-found: error
+
+  release:
+    name: Release'e ekle
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Release oluştur / güncelle
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.zip
+          generate_release_notes: true
+          name: "ERP Simülasyon ${{ github.ref_name }}"
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', github.run_number) }}
