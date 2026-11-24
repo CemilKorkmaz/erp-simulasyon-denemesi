@@ -26,7 +26,7 @@ SONUC: list[tuple[str, bool, str]] = []
 RUN_ID = str(int(time.time()))
 
 
-def cagir(yol: str, metot: str = "GET", govde: dict | None = None):
+def cagir(yol: str, metot: str = "GET", govde=None):
     url = BASE + yol
     veri = None
     basliklar = {}

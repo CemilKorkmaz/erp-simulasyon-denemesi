@@ -3,3 +3,4 @@ uvicorn[standard]
 asyncua
 sqlalchemy
 python-multipart
+pydantic>=2.0

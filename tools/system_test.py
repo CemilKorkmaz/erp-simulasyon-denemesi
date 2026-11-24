@@ -44,8 +44,8 @@ SONUC = []
 # ------------------------------------------------------------------ yardımcı
 
 
-def cagir(yol: str, metot: str = "GET", govde: dict | None = None,
-          beklenen: int | None = None):
+def cagir(yol: str, metot: str = "GET", govde=None,
+          beklenen=None):
     """HTTP çağrısı yapar, (kod, veri) döndürür."""
     url = BASE + yol
     data = json.dumps(govde).encode() if govde is not None else None

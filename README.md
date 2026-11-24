@@ -126,13 +126,45 @@ kullanıyor — 1x, 10x, 25x, 50x hızda sonuç aynı.
 
 ---
 
+## Gereksinim: Python 3.10 veya üzeri
+
+Bu proje `Optional[...]` yerine yeni tip sözdizimini kullanmıyor, ama
+FastAPI/pydantic 3.10+ istiyor. macOS'un sistem Python'u genelde **3.9**'dur
+ve şu hatayı verir:
+
+```
+TypeError: Unable to evaluate type annotation 'dict | None'
+```
+
+**Çözüm (macOS):**
+
+```bash
+# 1. Python 3.12 kur
+brew install python@3.12
+#   veya https://www.python.org/downloads/ adresinden indir
+
+# 2. Eski sanal ortamı sil (3.9 ile kurulmuştu)
+cd ~/Documents/GitHub/erp-simulasyon-denemesi
+rm -rf .venv
+
+# 3. Baslat.command'a tekrar çift tıkla — yeni sürümle kurulur
+```
+
+Sürüm kontrolünü **`Baslat.command` kendisi yapıyor**: 3.10+ bulamazsa
+anlaşılır bir mesaj verir, traceback göstermez. `.venv` eski Python ile
+kurulmuşsa otomatik silip yeniden kurar.
+
+Sürümü kontrol etmek için: `python3 -V`
+
+---
+
 ## Kurulum ve çalıştırma
 
 ### En kolay yol: çift tıkla (terminal yok)
 
 | İşletim sistemi | Çift tıklanacak dosya | Not |
 |-----------------|------------------------|-----|
-| **Windows** | `Baslat.bat` | Python kurulu olmalı |
+| **Windows** | `Baslat.bat` | **Python 3.10+** kurulu olmalı |
 | **Windows** | `ERP_Simulasyon.exe` | Python bile gerekmez (Actions ile derlenir) |
 | **macOS** | `Baslat.command` | İlk sefer `chmod +x Baslat.command` |
 | **Linux** | `Baslat.sh` | İlk sefer `chmod +x Baslat.sh` |

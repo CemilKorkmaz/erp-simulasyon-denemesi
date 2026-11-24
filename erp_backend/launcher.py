@@ -32,6 +32,46 @@ import webbrowser
 # ------------------------------------------------------------------ yol ayarları
 
 
+MIN_PYTHON = (3, 10)
+
+
+def _python_yeterli() -> bool:
+    """Python sürümü yeterli mi? (3.10+ gerekiyor)
+
+    FastAPI/pydantic `X | None` gibi yeni tip sözdizimini değerlendirir;
+    3.9'da anlaşılmaz bir TypeError traceback'i çıkar. Bunu kullanıcıya
+    anlaşılır bir mesajla söylüyoruz.
+    """
+    return sys.version_info >= MIN_PYTHON
+
+
+def _python_uyari() -> int:
+    mevcut = ".".join(str(x) for x in sys.version_info[:3])
+    gerekli = ".".join(str(x) for x in MIN_PYTHON)
+    bilgi("")
+    bilgi("  HATA: Python sürümü çok eski.")
+    bilgi(f"  Bilgisayarındaki : Python {mevcut}")
+    bilgi(f"  Gereken          : Python {gerekli} veya üzeri")
+    bilgi("")
+    bilgi("  Neden? Uygulama, Python 3.10'da gelen 'X | None' tip")
+    bilgi("  sözdizimini kullanıyor. 3.9 bunu desteklemiyor.")
+    bilgi("")
+    bilgi("  ÇÖZÜM (macOS):")
+    bilgi("   1. https://www.python.org/downloads/ adresinden Python 3.12 indir")
+    bilgi("   2. Kur, sonra Terminal'de bu klasörde şunu çalıştır:")
+    bilgi("        rm -rf .venv")
+    bilgi("   3. Bu dosyaya tekrar çift tıkla (paketler yeniden kurulur)")
+    bilgi("")
+    bilgi("  Alternatif (Homebrew varsa):  brew install python@3.12")
+    bilgi("")
+    if sys.stdin and sys.stdin.isatty():
+        try:
+            input("  Kapatmak için Enter'a bas…")
+        except Exception:
+            pass
+    return 1
+
+
 def _base_dir() -> str:
     """Veritabanı ve dosyaların yazılacağı klasör.
 
@@ -119,6 +159,9 @@ def main() -> int:
         bilgi("  Yeni bir kopya başlatmak istersen önce açık olanı kapat.")
         time.sleep(3)
         return 0
+
+    if not _python_yeterli():
+        return _python_uyari()
 
     bilgi("  Simülasyon başlatılıyor, tarayıcı birkaç saniye içinde açılacak…")
     bilgi("  (Pencereyi kapatınca sunucu durur. Ctrl+C de yeter.)")

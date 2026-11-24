@@ -375,28 +375,28 @@ async def test_faults():
 
 
 @app.post("/api/test/faults/offline")
-async def test_fault_offline(payload: dict | None = None):
+async def test_fault_offline(payload: Optional[dict] = None):
     """PLC/ağ kesintisi: veri akışı durur, uçlar 503 döner."""
     p = payload or {}
     return FAULTS.set_offline(bool(p.get("aktif", True)), p.get("note", ""))
 
 
 @app.post("/api/test/faults/stale")
-async def test_fault_stale(payload: dict | None = None):
+async def test_fault_stale(payload: Optional[dict] = None):
     """Bayat veri: servis ayakta ama yeni ölçüm gelmiyor (STALE)."""
     p = payload or {}
     return FAULTS.set_stale(bool(p.get("aktif", True)), p.get("note", ""))
 
 
 @app.post("/api/test/faults/sensor")
-async def test_fault_sensor(payload: dict | None = None):
+async def test_fault_sensor(payload: Optional[dict] = None):
     """Sensör hatası: sıcaklık okuması BAD."""
     p = payload or {}
     return FAULTS.set_sensor_fault(bool(p.get("aktif", True)), p.get("note", ""))
 
 
 @app.post("/api/test/faults/overheat")
-async def test_fault_overheat(payload: dict | None = None):
+async def test_fault_overheat(payload: Optional[dict] = None):
     """Fırını güvenlik sınırının üstüne çıkar (alarm testi)."""
     p = payload or {}
     furnace = p.get("furnace") or next(iter(plant.furnaces))
