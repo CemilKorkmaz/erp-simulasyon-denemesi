@@ -163,12 +163,21 @@ async def simulation_loop() -> None:
             for event in events:
                 if event.get("type") == "order_completed":
                     summary = event["summary"]
+                    oid = summary["order_id"]
+                    emir = plant.get_order(oid) or {}
+                    # PLC üzerinden açılan emirlerde DB satırı olmayabilir;
+                    # upsert için kimlik alanlarını da geçir.
                     DB.update_order(
-                        summary["order_id"],
+                        oid,
                         state="COMPLETED",
                         finished_at=time.time(),
                         energy_total_m3=summary["energy_total_m3"],
                         cycle_time_s=summary["cycle_time_s"],
+                        product=emir.get("product"),
+                        furnace=emir.get("furnace"),
+                        target_temp=emir.get("target_temp"),
+                        duration_min=emir.get("duration_min"),
+                        created_at=emir.get("created_at"),
                     )
 
             for name, s in states.items():
@@ -198,6 +207,13 @@ async def simulation_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Önceki oturumdan yarıda kalan emirleri kapat (hayalet RUNNING kalmasın).
+    try:
+        kapatilan = DB.close_stale_orders()
+        if kapatilan:
+            print(f"Açılış: {kapatilan} yarıda kalan emir INTERRUPTED olarak kapatıldı.")
+    except Exception as exc:  # pragma: no cover
+        print("Yarıda kalan emirler kapatılamadı:", exc)
     asyncio.create_task(simulation_loop())
     asyncio.create_task(run_opcua_server(plant, host="0.0.0.0", port=4840))
     yield
@@ -446,6 +462,19 @@ async def plc_start(payload: dict):
     )
     if not cmd.ok:
         raise HTTPException(400, cmd.message)
+    # Emri hemen veritabanına işle: tamamlanınca update_order satırı bulsun.
+    oid = (cmd.sonuc or {}).get("order_id") if isinstance(cmd.sonuc, dict) else None
+    if oid:
+        emir = plant.get_order(oid) or {}
+        DB.add_order(
+            order_id=oid,
+            product=emir.get("product") or "ERP Emri",
+            furnace=furnace,
+            target_temp=float(emir.get("target_temp") or 0.0),
+            duration_min=float(emir.get("duration_min") or 0.0),
+            state="RUNNING",
+            created_at=float(emir.get("created_at") or time.time()),
+        )
     return cmd.to_dict()
 
 

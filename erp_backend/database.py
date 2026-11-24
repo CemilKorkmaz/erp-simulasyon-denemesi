@@ -133,13 +133,70 @@ class Database:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def close_stale_orders(self) -> int:
+        """Önceki oturumdan RUNNING kalan emirleri kapatır.
+
+        Sunucu kapanınca fırın durumu bellekte kayboluyor; DB'de RUNNING
+        kalan emir 'hayalet emir' olarak kalıyordu ve ERP panelinde hiç
+        bitmeyen bir iş gibi görünüyordu. Açılışta bunları INTERRUPTED
+        olarak işaretliyoruz (CANCELLED'dan farkı: kaza eseri kesildi).
+        """
+        with self.lock:
+            cur = self.conn.execute(
+                """
+                UPDATE production_orders
+                   SET state = 'INTERRUPTED', finished_at = ?
+                 WHERE state IN ('RUNNING', 'CREATED')
+                """,
+                (time.time(),),
+            )
+            self.conn.commit()
+            return cur.rowcount
+
     def update_order(self, order_id: str, **fields) -> None:
+        """Satır yoksa oluşturur (upsert).
+
+        PLC üzerinden başlatılan emirler (ERP -> /api/plc/start) doğrudan
+        fırına yazıldığı için production_orders'ta satırı olmayabilir. Bu
+        durumda düz UPDATE hiçbir şey yapmıyor ve tamamlanan emir veritabanına
+        hiç işlenmiyordu.
+        """
         if not fields:
             return
+        if self.conn.execute(
+            "SELECT 1 FROM production_orders WHERE id = ?", (order_id,)
+        ).fetchone() is None:
+            self._insert_order_row(order_id, fields)
         cols = ", ".join(f"{k} = ?" for k in fields)
         with self.lock:
             self.conn.execute(
                 f"UPDATE production_orders SET {cols} WHERE id = ?",
                 (*fields.values(), order_id),
+            )
+            self.conn.commit()
+
+    def _insert_order_row(self, order_id: str, fields: dict) -> None:
+        """Bilinmeyen emri, verilen alanlar + makul varsayılanlarla ekler."""
+        now = time.time()
+        vals = {
+            "id": order_id,
+            "product": fields.get("product") or "(PLC emri)",
+            "furnace": fields.get("furnace") or "(bilinmiyor)",
+            "target_temp": float(fields.get("target_temp") or 0.0),
+            "duration_min": float(fields.get("duration_min") or 0.0),
+            "state": fields.get("state") or "RUNNING",
+            "created_at": float(fields.get("created_at") or now),
+        }
+        with self.lock:
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO production_orders
+                    (id, product, furnace, target_temp, duration_min, state,
+                     created_at, started_at, finished_at, energy_total_m3, cycle_time_s)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)
+                """,
+                (vals["id"], vals["product"], vals["furnace"],
+                 vals["target_temp"], vals["duration_min"], vals["state"],
+                 vals["created_at"]),
             )
             self.conn.commit()

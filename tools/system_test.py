@@ -77,6 +77,13 @@ def kontrol(ad: str, kosul: bool, ayrinti: str = "") -> bool:
     return bool(kosul)
 
 
+FIRINLAR = [
+    "Aluminyum Eritme Fırını",
+    "Homojenizasyon Fırını",
+    "Biyet Isıtma Fırını",
+]
+
+
 def baslik(n: str, ad: str) -> None:
     print(f"\n[{n}] {ad}")
 
@@ -346,6 +353,8 @@ def main() -> int:
     test_j_guc()
     test_k_emir()
     test_l_denetim()
+    test_m_plc_baslat_emri()
+    test_n_durdurma_iptal()
 
     # Temizlik
     cagir("/api/test/faults/clear", "POST", {})
@@ -363,6 +372,55 @@ def main() -> int:
                 print(f"     - {ad}" + (f" ({ayrinti})" if ayrinti else ""))
     print("=" * 62)
     return 0 if gecen == toplam else 1
+
+
+# ---------------------------------------------------------------- M, N
+
+def test_m_plc_baslat_emri():
+    """PLC'den başlatılan fırın /api/orders'ta emir olarak GÖRÜNMELİ.
+
+    Bu, 'ERP neden hiç emir görmüyor?' hatasının regresyon testidir:
+    /api/plc/start doğrudan fırına yazıyordu, plant.orders'a kayıt
+    açmadığı için ERP paneli boş kalıyordu.
+    """
+    baslik("M", "PLC başlatması emir kaydı oluşturuyor")
+    cagir("/api/test/faults/clear", "POST", {})
+    cagir("/api/plc/stop", "POST", {"furnace": FIRINLAR[2]})
+
+    kod, d = cagir("/api/plc/start", "POST", {
+        "furnace": FIRINLAR[2], "product": "PLC Kayit Testi",
+        "duration_min": 1, "source": "ERP",
+    })
+    kontrol("PLC start kabul edildi", kod == 200, f"kod={kod}")
+
+    kod, emirler = cagir("/api/orders")
+    benim = [o for o in emirler if o.get("product") == "PLC Kayit Testi"]
+    kontrol("/api/orders'ta emir görünüyor", len(benim) == 1,
+            f"{len(benim)} kayıt")
+    if benim:
+        e = benim[0]
+        kontrol("Emir RUNNING", e["state"] == "RUNNING", e["state"])
+        kontrol("Fırın adı doğru", e["furnace"] == FIRINLAR[2], e["furnace"])
+        kontrol("started_at yazıldı", e.get("started_at") is not None)
+    cagir("/api/plc/stop", "POST", {"furnace": FIRINLAR[2]})
+
+
+def test_n_durdurma_iptal():
+    """Durdurulan emir CANCELLED olmalı, sessizce kaybolmamalı."""
+    baslik("N", "Durdurulan emir CANCELLED oluyor")
+    cagir("/api/plc/stop", "POST", {"furnace": FIRINLAR[0]})
+    kod, _ = cagir("/api/plc/start", "POST", {
+        "furnace": FIRINLAR[0], "product": "Iptal Testi",
+        "duration_min": 5, "source": "ERP",
+    })
+    kontrol("Emir başlatıldı", kod == 200, f"kod={kod}")
+    cagir("/api/plc/stop", "POST", {"furnace": FIRINLAR[0]})
+    bekle(0.5)
+    _, emirler = cagir("/api/orders")
+    benim = [o for o in emirler if o.get("product") == "Iptal Testi"]
+    kontrol("Emir CANCELLED", bool(benim) and benim[0]["state"] == "CANCELLED",
+            benim[0]["state"] if benim else "kayıt yok")
+
 
 
 if __name__ == "__main__":

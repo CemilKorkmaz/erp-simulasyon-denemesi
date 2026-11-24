@@ -173,13 +173,29 @@ class PlcWriteController:
                 f"REDDEDİLDİ: hedef {hedef:.0f} °C güvenlik sınırını "
                 f"({f.params.max_temp:.0f} °C) aşıyor", istenen=hedef)
         self._start_seq += 1
-        f.start_order(order_id=f"PLC-{int(time.time())}-{self._start_seq}",
-                      product=product, target_temp=float(hedef),
-                      duration_min=float(duration_min), now=time.time())
+        now = time.time()
+        oid = f"PLC-{int(now)}-{self._start_seq}"
+        # ERP'nin görebilmesi için emri plant.orders'a da yaz. Aksi halde
+        # /api/orders boş kalır ve emir veritabanına hiç işlenmez.
+        self.plant.orders[oid] = {
+            "id": oid,
+            "product": product,
+            "furnace": furnace,
+            "target_temp": float(hedef),
+            "duration_min": float(duration_min),
+            "state": "RUNNING",
+            "created_at": now,
+            "started_at": now,
+            "finished_at": None,
+            "source": source,
+        }
+        f.start_order(order_id=oid, product=product, target_temp=float(hedef),
+                      duration_min=float(duration_min), now=now)
         return self._kaydet(source, "start", furnace,
                             {"target": hedef, "duration_min": duration_min}, True,
                             f"Fırın başlatıldı, hedef {hedef:.0f} °C, "
-                            f"süre {duration_min:g} dk", sonuc=hedef)
+                            f"süre {duration_min:g} dk (emir {oid})",
+                            istenen=hedef, sonuc={"order_id": oid})
 
     def stop(self, furnace: str, source: str = "ERP"):
         """Fırını durdurur (emri iptal eder, KAPALI'ya döner)."""
@@ -190,6 +206,12 @@ class PlcWriteController:
         if not f:
             return self._kaydet(source, "stop", furnace, {}, False,
                                 f"Fırın bulunamadı: {furnace}")
+        aktif = f.order_id
+        if aktif and aktif in self.plant.orders:
+            emir = self.plant.orders[aktif]
+            if emir.get("state") == "RUNNING":
+                emir["state"] = "CANCELLED"
+                emir["finished_at"] = time.time()
         f.order_id = None
         f.order_product = None
         f.state.status = type(f.state.status).OFF
