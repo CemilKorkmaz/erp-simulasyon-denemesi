@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Bu scripti reponun KÖKÜNDEN çalıştır: ./erp_simulation/run_mac.sh
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Reponun KÖKÜNDEN çalıştır: ./erp_simulation/run_mac.sh
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 echo "=============================================="
